@@ -1,13 +1,12 @@
 {
   "name": "nexus",
   "version": "0.1.0",
-  "description": "Genesis multi-agent system",
-  "main": "src/genesis/run.ts",
   "scripts": {
     "start": "ts-node src/genesis/run.ts"
   },
-  "dependencies": {
+  "devDependencies": {
+    "@types/node": "^26.1.0",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^5.0.0"
   }
 }
