@@ -2,7 +2,6 @@ import { GenesisCore } from "./core";
 
 const genesis = new GenesisCore();
 
-// get input from command line
 const input = process.argv.slice(2).join(" ");
 
 if (!input) {
