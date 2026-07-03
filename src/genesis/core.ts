@@ -2,47 +2,44 @@ export class GenesisCore {
   private cycle = 0;
   private memory: string[] = [];
 
-  constructor() {}
-
   execute(input: string) {
     this.cycle++;
 
     const cleanInput = input.trim();
     this.memory.push(cleanInput);
 
-    const evolutionSignal =
-      this.memory.length % 2 === 0 ? "EXPAND" : "STABILIZE";
+    const memoryPressure = this.memory.length;
+    const cyclePressure = this.cycle;
 
-    const result = {
+    const entropy = memoryPressure * 0.6 + cyclePressure * 0.4;
+
+    let evolutionSignal: "STABLE" | "EXPAND" | "DIVERGE" | "RESTRUCTURE" =
+      "STABLE";
+
+    if (entropy > 8) evolutionSignal = "EXPAND";
+    if (entropy > 15) evolutionSignal = "DIVERGE";
+    if (entropy > 25) evolutionSignal = "RESTRUCTURE";
+
+    const lastInputs = this.memory.slice(-3).join(" → ");
+
+    const reflection =
+      entropy < 8
+        ? "Orb stabilizing core loop"
+        : entropy < 15
+        ? "Orb expanding internal structure"
+        : entropy < 25
+        ? "Orb diverging behavior paths"
+        : "Orb restructuring system logic";
+
+    return {
       status: "ok",
       cycle: this.cycle,
       input: cleanInput,
       evolutionSignal,
+      entropy,
+      reflection,
       memorySize: this.memory.length,
-      generatedFiles: [
-        {
-          path: "src/server.ts",
-          content: `console.log("server running");`
-        },
-        {
-          path: "src/auth/login.ts",
-          content: `export function login() {}`
-        },
-        {
-          path: "src/auth/register.ts",
-          content: `export function register() {}`
-        },
-        {
-          path: "src/config/index.ts",
-          content: `export const config = {};`
-        },
-        {
-          path: "README.md",
-          content: `# Genesis Project`
-        }
-      ]
+      memoryTrace: lastInputs
     };
-
-    return result;
   }
 }
