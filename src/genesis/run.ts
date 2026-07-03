@@ -1,15 +1,13 @@
-import { GenesisCore } from "./core";
-
-const genesis = new GenesisCore();
+import { runOrb } from "./orb/OrbCycle";
 
 const input = process.argv.slice(2).join(" ");
 
 if (!input) {
-  console.log("Please provide a task input");
+  console.log("No input provided");
   process.exit(1);
 }
 
-const result = genesis.execute(input);
+const result = runOrb(input);
 
-console.log("\n=== FINAL RESULT ===");
+console.log("\n=== ORB OUTPUT ===\n");
 console.log(result);
