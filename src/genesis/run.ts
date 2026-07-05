@@ -1,13 +1,58 @@
-import { runOrb } from "./orb/OrbCycle";
+import * as readline from "readline";
+import { runCommand } from "./commandRegistry";
+import { loadMemory } from "./memory";
 
-const input = process.argv.slice(2).join(" ");
+const memory = loadMemory();
 
-if (!input) {
-  console.log("No input provided");
-  process.exit(1);
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+console.log("\n=== GENESIS COMMAND SYSTEM ACTIVE ===");
+console.log("Type 'exit' to quit.\n");
+
+function run(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return;
+
+  // 🧱 HARD GATE: block shell commands entering system
+  if (
+    trimmed.startsWith("nano ") ||
+    trimmed.startsWith("cd ") ||
+    trimmed.startsWith("ls") ||
+    trimmed.startsWith("pwd")
+  ) {
+    console.log("\n=== SYSTEM OUTPUT ===");
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          error: "shell command detected - blocked at runtime gate",
+        },
+        null,
+        2
+      )
+    );
+    console.log("\n--- ready ---\n");
+    return;
+  }
+
+  const result = runCommand(trimmed, {
+    memory: Object.freeze(memory),
+  });
+
+  console.log("\n=== SYSTEM OUTPUT ===");
+  console.log(JSON.stringify(result, null, 2));
+  console.log("\n--- ready ---\n");
 }
 
-const result = runOrb(input);
+rl.on("line", (input) => {
+  const trimmed = input.trim();
 
-console.log("\n=== ORB OUTPUT ===\n");
-console.log(result);
+  if (trimmed === "exit") {
+    process.exit(0);
+  }
+
+  run(trimmed);
+});

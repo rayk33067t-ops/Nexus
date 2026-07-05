@@ -1,39 +1,48 @@
 import fs from "fs";
+import path from "path";
+import { OrbState, OrbMemoryEntry } from "./OrbTypes";
 
-export interface OrbState {
-  cycle: number;
-  memory: string[];
-  entropyHistory: number[];
-  summaries: string[];
-}
-
-export const initialOrbState: OrbState = {
-  cycle: 0,
-  memory: [],
-  entropyHistory: [],
-  summaries: []
-};
-
-const STATE_PATH = "orb_state.json";
+const MEMORY_PATH = path.join(process.cwd(), "orb_memory.json");
 
 export function loadState(): OrbState {
-  if (!fs.existsSync(STATE_PATH)) {
-    return structuredClone(initialOrbState);
+  if (!fs.existsSync(MEMORY_PATH)) {
+    return {
+      cycle: 0,
+      memory: [],
+      entropy: 0,
+      evolutionSignal: "STABLE",
+      reflection: "initial state",
+      lastProcessedInput: undefined,
+    };
   }
-  return JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
+
+  const raw = fs.readFileSync(MEMORY_PATH, "utf-8");
+  return JSON.parse(raw);
 }
 
-export function saveState(state: OrbState) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+export function saveState(state: OrbState): void {
+  fs.writeFileSync(MEMORY_PATH, JSON.stringify(state, null, 2));
 }
 
-/**
- * NEW: replaces old pushMemory system
- */
-export function pushMemory(state: OrbState, entry: string): OrbState {
+// FIXED: prevents duplicate spam
+export function pushMemory(state: OrbState, input: string): OrbState {
+  const last = state.memory[state.memory.length - 1];
+
+  if (last?.input === input) {
+    return state;
+  }
+
+  const entry: OrbMemoryEntry = {
+    input,
+    timestamp: Date.now(),
+  };
+
   return {
     ...state,
     memory: [...state.memory, entry],
-    cycle: state.cycle + 1
   };
+}
+
+export function getMemorySize(state: OrbState): number {
+  return state.memory.length;
 }

@@ -1,25 +1,15 @@
-export type EvolutionSignal =
-  | "STABLE"
-  | "EXPAND"
-  | "RESTRUCTURE"
-  | "COMPRESS";
+export type EvolutionSignal = "STABLE" | "EXPAND" | "RESTRUCTURE";
+
+export interface OrbMemoryEntry {
+  input: string;
+  timestamp: number;
+}
 
 export interface OrbState {
   cycle: number;
-  memorySize: number;
+  memory: OrbMemoryEntry[];
   entropy: number;
-  lastInput: string;
-}
-
-export interface OrbCycleResult {
-  cycle: number;
-  input: string;
   evolutionSignal: EvolutionSignal;
-  memorySize: number;
-  entropy: number;
   reflection: string;
-  generatedFiles: Array<{
-    path: string;
-    content: string;
-  }>;
+  lastProcessedInput?: string;
 }
