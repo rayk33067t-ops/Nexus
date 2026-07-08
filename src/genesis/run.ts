@@ -4,6 +4,9 @@ import * as readline from
 import * as fs from "fs";
 
 const engine = new Engine();
+
+console.log("[Genesis] Connected to NEXUS Engine");
+
 engine.start();
 
 /**
