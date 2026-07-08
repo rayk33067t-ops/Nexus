@@ -1,10 +1,6 @@
-import { Engine } from"../core/engine";
-import * as readline from
- "readline";
+cd ~/nexus-core/genesis-home/NEXUS && nano src/genesis/run.ts
+import * as readline from "readline";
 import * as fs from "fs";
-
-const engine = new Engine();
-engine.start();
 
 /**
  * =========================
@@ -23,26 +19,23 @@ function loadMemory(): any[] {
 }
 
 function saveMemory(memory: any[]) {
-  fs.writeFileSync(
-    MEMORY_FILE,
-    JSON.stringify(memory, null, 2)
-  );
+  fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
 }
 
 /**
  * =========================
- * MEMORY ANALYSIS
+ * CORE ENGINE (YOUR MODULE)
  * =========================
  */
 
 function analyzeMemory(memory: any[]) {
   const counts: Record<string, number> = {};
 
-  for (const item of memory) {
-    if (!item.input) continue;
+  for (const m of memory) {
+    const key = m.input;
+    if (!key) continue;
 
-    counts[item.input] =
-      (counts[item.input] || 0) + 1;
+    counts[key] = (counts[key] || 0) + 1;
   }
 
   return counts;
@@ -50,7 +43,7 @@ function analyzeMemory(memory: any[]) {
 
 /**
  * =========================
- * GENESIS RUNTIME
+ * CLI SETUP
  * =========================
  */
 
@@ -70,38 +63,34 @@ console.log("[Genesis] Runtime active. Type commands...");
 
 function handleCommand(input: string) {
   const trimmed = input.trim();
-
   if (!trimmed) return;
 
   const memory = loadMemory();
 
+  // store only real user input
   memory.push({
     input: trimmed,
     timestamp: Date.now(),
     type: "user",
-  });
+  });const analysis = analyzeMemory(memory);
+const count = analysis[trimmed] || 0;
+
+if (count === 3) {
+  console.log(`[Genesis] Pattern detected: "${trimmed}" used 3 times.`);
+}
 
   saveMemory(memory);
 
+  /**
+   * =========================
+   * ENGINE OUTPUT
+   * =========================
+   */
+
   const analysis = analyzeMemory(memory);
+
   const count = analysis[trimmed] || 0;
 
-  if (count === 3) {
-    console.log(
-      `[Genesis] Pattern detected: ${trimmed}`
-    );
-  }
-}
-
-/**
- * =========================
- * START LOOP
- * =========================
- */
-
-rl.prompt();
-
-rl.on("line", (line) => {
-  handleCommand(line);
-  rl.prompt();
-});
+  5 lvv
+if (count === 3) {
+ m
