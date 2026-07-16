@@ -1,6 +1,5 @@
-import { Engine } from"../core/engine";
-import * as readline from
- "readline";
+import { Engine } from "../core/engine";
+import * as readline from "readline";
 import * as fs from "fs";
 
 const engine = new Engine();
@@ -72,9 +71,24 @@ console.log("[Genesis] Runtime active. Type commands...");
  */
 
 function handleCommand(input: string) {
-  const trimmed = input.trim();
+  const trimmed = input.trim().toLowerCase();
 
   if (!trimmed) return;
+
+  if (trimmed === "help") {
+    console.log("Commands: help, hello, status");
+    return;
+  }
+
+  if (trimmed === "hello") {
+    console.log("Hello! Genesis is online.");
+    return;
+  }
+
+  if (trimmed === "status") {
+    console.log("Status: Engine running.");
+    return;
+  }
 
   const memory = loadMemory();
 

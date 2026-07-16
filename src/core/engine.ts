@@ -30,4 +30,8 @@ export class Engine {
 
     this.bus.emit("engine.heartbeat");
   }
+
+  getBus() {
+    return this.bus;
+  }
 }
