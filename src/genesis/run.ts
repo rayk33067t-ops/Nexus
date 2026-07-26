@@ -1,124 +1,214 @@
-import { Engine } from "../core/engine";
-import * as readline from "readline";
-import * as fs from "fs";
+import readline from "readline";
 
-const engine = new Engine();
+import { loadFoundation } from "./core/FoundationLoader";
+import { loadChronicle } from "./core/ChronicleLoader";
+import { loadMeeting } from "./core/MeetingLoader";
+import { loadTasks } from "./core/TaskLoader";
+import { startDailyCycle } from "./core/DailyCycle";
 
-console.log("[Genesis] Connected to NEXUS Engine");
 
-engine.start();
-
-/**
- * =========================
- * MEMORY STORAGE
- * =========================
- */
-
-const MEMORY_FILE = "src/genesis/memory.json";
-
-function loadMemory(): any[] {
-  try {
-    return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
-  } catch {
-    return [];
-  }
+function header(title:string){
+  console.log("\n================================");
+  console.log(title);
+  console.log("================================");
 }
 
-function saveMemory(memory: any[]) {
-  fs.writeFileSync(
-    MEMORY_FILE,
-    JSON.stringify(memory, null, 2)
-  );
-}
 
-/**
- * =========================
- * MEMORY ANALYSIS
- * =========================
- */
+const foundation = loadFoundation();
+const chronicle = loadChronicle();
+const meeting = loadMeeting();
+const tasks = loadTasks();
 
-function analyzeMemory(memory: any[]) {
-  const counts: Record<string, number> = {};
 
-  for (const item of memory) {
-    if (!item.input) continue;
+header("GENESIS FOUNDATION");
+console.log("Status:", foundation.status);
 
-    counts[item.input] =
-      (counts[item.input] || 0) + 1;
-  }
 
-  return counts;
-}
+header("NEXUS CHRONICLE");
+console.log("Status:", chronicle.status);
 
-/**
- * =========================
- * GENESIS RUNTIME
- * =========================
- */
+
+header("MORNING BRIEFING SYSTEM");
+console.log("Status:", meeting.status);
+
+
+header("GENESIS TASK BOARD");
+console.log("Status:", tasks.status);
+
+
+
+console.log("\n[Genesis] Runtime active. Type commands...");
+
 
 const rl = readline.createInterface({
   input: process.stdin,
-  output: process.stdout,
-  prompt: "> ",
+  output: process.stdout
 });
 
-console.log("[Genesis] Runtime active. Type commands...");
 
-/**
- * =========================
- * COMMAND HANDLER
- * =========================
- */
+function showTasks(){
 
-function handleCommand(input: string) {
-  const trimmed = input.trim().toLowerCase();
+header("GENESIS TASK BOARD");
 
-  if (!trimmed) return;
+console.log("\nMission:");
+console.log(tasks.mission);
 
-  if (trimmed === "help") {
-    console.log("Commands: help, hello, status");
-    return;
-  }
 
-  if (trimmed === "hello") {
-    console.log("Hello! Genesis is online.");
-    return;
-  }
+for(const task of tasks.tasks){
 
-  if (trimmed === "status") {
-    console.log("Status: Engine running.");
-    return;
-  }
+console.log(
+`\n${task.agent} | ${task.status}
+Task: ${task.task}`
+);
 
-  const memory = loadMemory();
-
-  memory.push({
-    input: trimmed,
-    timestamp: Date.now(),
-    type: "user",
-  });
-
-  saveMemory(memory);
-
-  const analysis = analyzeMemory(memory);
-  const count = analysis[trimmed] || 0;
-
-  if (count === 3) {
-    console.log(
-      `[Genesis] Pattern detected: ${trimmed}`
-    );
-  }
 }
 
-/**
- * =========================
- * START LOOP
- * =========================
- */
+}
 
-rl.prompt();
 
-rl.on("line", (line) => {
-  handleCommand(line);
-  rl.prompt();
+
+function showChronicle(){
+
+header("NEXUS CHRONICLE");
+
+for(const event of chronicle.timeline){
+
+console.log(
+`\n${event.day}
+${event.title}
+${event.description}`
+);
+
+}
+
+console.log("\nCurrent Mission:");
+console.log(chronicle.currentMission);
+
+console.log("\nNext Mission:");
+console.log(chronicle.nextMission);
+
+}
+
+
+
+function showMeeting(){
+
+header("COMMAND CHAMBER");
+console.log("MORNING BRIEFING");
+
+console.log("\nGenesis:");
+console.log(meeting.opening);
+
+
+console.log("\nAttendance:");
+
+for(const person of meeting.attendees){
+
+console.log(
+`- ${person.name} | ${person.role} | ${person.status}`
+);
+
+}
+
+
+console.log("\nToday's Mission:");
+console.log(meeting.mission.title);
+
+console.log("\nFocus:");
+
+for(const item of meeting.mission.focus){
+
+console.log("- " + item);
+
+}
+
+}
+
+
+
+function runDayStart(){
+
+const cycle = startDailyCycle();
+
+header("DAILY CONSTRUCTION CYCLE");
+
+console.log("Status:", cycle.status);
+console.log("Time:", cycle.timestamp);
+
+console.log("\nMission:");
+console.log(cycle.mission);
+
+}
+
+
+
+rl.on("line",(line)=>{
+
+const command = line.trim();
+
+
+switch(command){
+
+
+case "help":
+console.log(
+"Commands: help, status, chronicle, meeting, tasks, day-start"
+);
+break;
+
+
+
+case "status":
+
+console.log("Genesis Status: ONLINE");
+console.log("Foundation:", foundation.status);
+console.log("Chronicle:", chronicle.status);
+console.log("Meeting:", meeting.status);
+console.log("Tasks:", tasks.status);
+
+break;
+
+
+
+case "chronicle":
+
+showChronicle();
+
+break;
+
+
+
+case "meeting":
+
+showMeeting();
+
+break;
+
+
+
+case "tasks":
+
+showTasks();
+
+break;
+
+
+
+case "day-start":
+
+runDayStart();
+
+break;
+
+
+
+default:
+
+console.log(
+"Genesis does not recognize that command."
+);
+
+}
+
+
 });

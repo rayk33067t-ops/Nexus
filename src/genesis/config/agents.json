@@ -1,0 +1,37 @@
+{
+  "name": "NEXUS Agent Directory",
+  "version": "1.0",
+
+  "agents": [
+    {
+      "name": "Genesis",
+      "role": "Lead Architect",
+      "status": "Online"
+    },
+    {
+      "name": "Builder",
+      "role": "Implementation and Creation",
+      "status": "Ready"
+    },
+    {
+      "name": "Reviewer",
+      "role": "Quality Control and Analysis",
+      "status": "Ready"
+    },
+    {
+      "name": "Tester",
+      "role": "Validation and Reliability",
+      "status": "Ready"
+    },
+    {
+      "name": "Documenter",
+      "role": "Knowledge Preservation",
+      "status": "Ready"
+    },
+    {
+      "name": "GENEXT",
+      "role": "Tool Intelligence and Procurement",
+      "status": "Online"
+    }
+  ]
+}

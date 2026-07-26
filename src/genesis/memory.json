@@ -325,5 +325,65 @@
     "input": "Help",
     "timestamp": 1783990388615,
     "type": "user"
+  },
+  {
+    "input": "cd ~/nexus-core",
+    "timestamp": 1784164245880,
+    "type": "user"
+  },
+  {
+    "input": "git status",
+    "timestamp": 1784164247685,
+    "type": "user"
+  },
+  {
+    "input": "cd ~/genesis-home/nexus",
+    "timestamp": 1784164287721,
+    "type": "user"
+  },
+  {
+    "input": "npx ts-node src/genesis/run.ts",
+    "timestamp": 1784164288666,
+    "type": "user"
+  },
+  {
+    "input": "exit",
+    "timestamp": 1784164330143,
+    "type": "user"
+  },
+  {
+    "input": "ctrl + c",
+    "timestamp": 1784164349585,
+    "type": "user"
+  },
+  {
+    "input": "cd ~/nexus-core/genesis-home/nexus",
+    "timestamp": 1784524368513,
+    "type": "user"
+  },
+  {
+    "input": "mkdir -p src/genesis/config",
+    "timestamp": 1784524388081,
+    "type": "user"
+  },
+  {
+    "input": "nano src/genesis/config/ecosystem-map.json",
+    "timestamp": 1784524389243,
+    "type": "user"
+  },
+  {
+    "input": "npx ts-node src/genesis/run.ts",
+    "timestamp": 1784524976575,
+    "type": "user"
+  },
+  {
+    "input": "nexus eco",
+    "timestamp": 1784524989280,
+    "type": "user"
+  },
+  {
+    "input": "> ecosystem",
+    "timestamp": 1784525041157,
+    "type": "user"
   }
 ]
