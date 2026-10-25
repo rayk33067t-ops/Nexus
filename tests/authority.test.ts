@@ -147,12 +147,13 @@ test("Savannah's challenge turns allow into ask for that plan only, and cannot a
 
 test("a hostile report puts NEXUS in lockdown until the founder clears it", () => {
   rules([rule("ok", "genesis", "fs.write", "**", "allow")]);
-  KA.reportHostile({ actor: "genesis", action: "fs.write", target: "project:x", reason: "traversal" });
+  KA.reportHostile({ actor: "intruder", action: "fs.write", target: "project:x", reason: "traversal" });
   assert.equal(KA.isLockedDown(), true);
   const d = KA.decide(req());
   assert.equal(d.outcome, "ask");
   assert.match(d.reason, /lockdown/);
-  assert.equal(founder.lockdownStatus().incidents.length, 1);
+  // one incident from Key Authority, one from the Warden quarantining the sender
+  assert.equal(founder.lockdownStatus().incidents.length, 2);
   founder.clearLockdown();
   assert.equal(KA.decide(req()).outcome, "allow");
 });
@@ -198,12 +199,14 @@ test("the same plan into a different output root needs its own approval", () => 
   assert.equal(code(() => b.createProject("demo", files())).code, "APPROVAL_REQUIRED");
 });
 
-test("a traversal attempt triggers lockdown, so even allowed builds then need approval", () => {
-  rules([rule("ok", "genesis", "fs.write", "project:*", "allow")]);
+test("a traversal attempt locks NEXUS down and the Warden quarantines the agent that tried it", () => {
+  rules([rule("ok", "*", "fs.write", "project:*", "allow")]);
   const e = engine();
   assert.equal(code(() => e.createProject("evil", { files: [{ path: "../../escape.txt", content: "x" }] })).code, "INVALID_PATH");
   assert.equal(KA.isLockedDown(), true);
-  assert.equal(code(() => e.createProject("demo", files())).code, "APPROVAL_REQUIRED");
+  assert.equal(code(() => e.createProject("demo", files())).code, "GUARD_DENIED");
+  // another agent is not quarantined, but lockdown means it now needs approval
+  assert.equal(code(() => e.createProject("demo", files(), "builder")).code, "APPROVAL_REQUIRED");
 });
 
 test("Savannah cannot build even with a permissive allow rule if a deny rule names her", () => {
@@ -213,15 +216,18 @@ test("Savannah cannot build even with a permissive allow rule if a deny rule nam
 
 // ---------- structure ----------
 
-test("only the founder CLI imports the founder module", () => {
+test("only the founder CLI imports the Key Authority founder module", () => {
   const src = path.join(__dirname, "..", "src");
+  const authDir = path.join(src, "genesis", "authority");
   const offenders: string[] = [];
   const walk = (dir: string) => {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, ent.name);
       if (ent.isDirectory()) walk(p);
-      else if (/\.(ts|js)$/.test(ent.name) && !p.endsWith(path.join("authority", "cli.ts"))) {
-        if (/from\s+["'][^"']*founder["']|require\(\s*["'][^"']*founder["']\s*\)/.test(fs.readFileSync(p, "utf-8"))) offenders.push(p);
+      else if (/\.(ts|js)$/.test(ent.name) && p !== path.join(authDir, "cli.ts")) {
+        const text = fs.readFileSync(p, "utf-8");
+        const inAuth = path.dirname(p) === authDir;
+        if (/["'][^"']*authority\/founder["']/.test(text) || (inAuth && /["']\.\/founder["']/.test(text))) offenders.push(p);
       }
     }
   };
