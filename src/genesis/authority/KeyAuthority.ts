@@ -17,6 +17,7 @@ import {
   readJSON,
   writeJSONAtomic,
 } from "./store";
+import { getAgent, recordSignal } from "../warden/state";
 
 /**
  * Key Authority — the only thing that can say yes to a protected action.
@@ -243,7 +244,14 @@ export function decide(input: AuthorityRequest): AuthorityOutcome {
   if (req.summary !== undefined && (typeof req.summary !== "string" || req.summary.length > MAX_SUMMARY)) {
     return outcome("deny", "summary must be a string under 64 KB");
   }
+  // The Warden's verdict on this agent comes before any rule.
+  const agent = getAgent(req.actor);
+  if (agent.status === "quarantined") {
+    return outcome("deny", `${req.actor} is quarantined by the Warden (${agent.reasons.join("; ") || "no reason recorded"})`);
+  }
+
   if (!(ACTIONS as readonly string[]).includes(req.action)) {
+    recordSignal(req.actor, "denied", `unknown action "${req.action}"`);
     return outcome("deny", `unknown action "${req.action}"`);
   }
 
@@ -251,12 +259,16 @@ export function decide(input: AuthorityRequest): AuthorityOutcome {
   if (!loaded.ok) return outcome("deny", `no usable rules (${loaded.reason}); denied`);
 
   const ev = evaluateRules(loaded.rules, req);
-  if (ev.effect === "deny") return outcome("deny", `denied by rule ${ev.ruleIds.join(", ")}`);
+  if (ev.effect === "deny") {
+    recordSignal(req.actor, "denied", `${req.action} on ${req.target} denied by rule ${ev.ruleIds.join(", ")}`);
+    return outcome("deny", `denied by rule ${ev.ruleIds.join(", ")}`);
+  }
   if (ev.effect === null) return outcome("deny", "no rule matches; denied by default");
 
   const reasons: string[] = [];
   let effect: Effect = ev.effect;
   if (effect === "ask") reasons.push(`rule ${ev.ruleIds.join(", ")} requires founder approval`);
+  if (effect === "allow" && agent.status === "probation") { effect = "ask"; reasons.push(`${req.actor} is on probation`); }
   if (effect === "allow" && isLockedDown()) { effect = "ask"; reasons.push("NEXUS is in lockdown"); }
   if (effect === "allow" && isChallenged(req.digest)) { effect = "ask"; reasons.push("Savannah challenged this plan"); }
 
@@ -281,7 +293,10 @@ export function challenge(input: { actor: string; digest: string; reason: string
   return true;
 }
 
-/** Record a hostile request and put NEXUS into lockdown until the founder clears it. */
+/**
+ * Record a hostile request: NEXUS goes into lockdown, and the Warden
+ * quarantines the agent that sent it.
+ */
 export function reportHostile(input: { actor: string; action: string; target: string; reason: string }): void {
   const prev = (readJSON(LOCKDOWN_FILE) as LockdownRecord | null) ?? null;
   const now = new Date().toISOString();
@@ -297,6 +312,7 @@ export function reportHostile(input: { actor: string; action: string; target: st
     incidents: [...(prev?.incidents ?? []), incident].slice(-100),
   };
   writeJSONAtomic(LOCKDOWN_FILE, record);
+  recordSignal(incident.actor, "hostile", `${incident.action} on ${incident.target}: ${incident.reason}`);
 }
 
 export { APPROVAL_TTL_MS };

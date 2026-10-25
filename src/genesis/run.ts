@@ -5,6 +5,17 @@ import { loadChronicle } from "./core/ChronicleLoader";
 import { loadMeeting } from "./core/MeetingLoader";
 import { loadTasks } from "./core/TaskLoader";
 import { startDailyCycle } from "./core/DailyCycle";
+import { startupGate } from "./warden/Warden";
+
+
+// The Warden decides whether Genesis may start at all.
+const gate = startupGate("genesis");
+for (const w of gate.warnings) console.log("[Warden] " + w);
+if (!gate.ok) {
+  console.log("[Warden] Genesis is not allowed to start: " + gate.reason);
+  console.log("[Warden] Run `npm run warden -- status` to see why.");
+  process.exit(1);
+}
 
 
 function header(title:string){

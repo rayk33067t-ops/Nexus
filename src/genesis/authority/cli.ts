@@ -7,12 +7,12 @@
  *   npm run authority -- reject <id>       discard it
  *   npm run authority -- rules             check the rules file and list rules
  *   npm run authority -- lockdown          show lockdown status and incidents
- *   npm run authority -- lockdown:clear    end lockdown
+ *   (end lockdown with: npm run warden -- lockdown:clear)
  */
 
 import { PATHS } from "./store";
 import { loadRules } from "./KeyAuthority";
-import { approve, clearLockdown, getPending, listPending, lockdownStatus, reject } from "./founder";
+import { approve, getPending, listPending, lockdownStatus, reject } from "./founder";
 
 function show(p: { id: string; actor: string; action: string; target: string; digest: string; summary: string; reasons: string[]; requestedAt: string }) {
   console.log(`Request ${p.id}  (${p.requestedAt})`);
@@ -59,14 +59,15 @@ function main(argv: string[]): number {
       if (!l) { console.log("Not in lockdown."); return 0; }
       console.log(`IN LOCKDOWN since ${l.since}. Every action needs your approval.`);
       for (const i of l.incidents) console.log(`  ${i.at}  ${i.actor} ${i.action} ${i.target}\n    ${i.reason}`);
-      console.log("Clear it with: npm run authority -- lockdown:clear");
+      console.log("Clear it with: npm run warden -- lockdown:clear");
       return 0;
     }
     case "lockdown:clear":
-      console.log(clearLockdown() ? "Lockdown cleared." : "Not in lockdown.");
-      return 0;
+      console.log("Lockdown is now ended through the Warden, which asks for your passphrase:");
+      console.log("  npm run warden -- lockdown:clear");
+      return 1;
     default:
-      console.log("Usage: npm run authority -- <pending | show <id> | approve <id> | reject <id> | rules | lockdown | lockdown:clear>");
+      console.log("Usage: npm run authority -- <pending | show <id> | approve <id> | reject <id> | rules | lockdown>");
       return cmd ? 1 : 0;
   }
 }
