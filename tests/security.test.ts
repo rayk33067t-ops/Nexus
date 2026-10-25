@@ -4,29 +4,37 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { coreGuard, PROTECTED_ACTIONS } from "../src/genesis/guards/coreGuard";
-import {
+// Point Key Authority at an empty, private state dir and a missing rules file
+// before it loads, so these tests see the "no rules, deny everything" state.
+const KA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ka-security-"));
+process.env.NEXUS_RULES_PATH = path.join(KA_DIR, "missing-rules.json");
+process.env.NEXUS_STATE_DIR = path.join(KA_DIR, "state");
+
+const { coreGuard, PROTECTED_ACTIONS } = require("../src/genesis/guards/coreGuard");
+const {
   ScaffoldEngine,
   ScaffoldError,
   ensureDirectories,
   snapshotProject,
   writeProjectConfined,
-} from "../src/genesis/scaffold";
+} = require("../src/genesis/scaffold");
+
+const D = "sha256:" + "0".repeat(64);
 
 // ---------- coreGuard: default deny, structured request, decision only ----------
 
-test("guard denies every protected action while Key Authority is missing", () => {
+test("guard denies every protected action when there is no rules file", () => {
   for (const action of PROTECTED_ACTIONS) {
     for (const actor of ["genesis", "savannah", "founder"]) {
-      const d = coreGuard({ actor, action, target: "project:demo" });
+      const d = coreGuard({ actor, action, target: "project:demo", digest: D });
       assert.equal(d.allowed, false, `${actor} ${action}`);
-      assert.match(d.reason, /Key Authority is not implemented/);
+      assert.match(d.reason, /no usable rules/);
     }
   }
 });
 
 test("guard denies unknown actions", () => {
-  const d = coreGuard({ actor: "genesis", action: "fs.delete", target: "x" });
+  const d = coreGuard({ actor: "genesis", action: "fs.delete", target: "x", digest: D });
   assert.equal(d.allowed, false);
   assert.match(d.reason, /unknown action/);
 });
@@ -39,12 +47,12 @@ test("guard rejects raw strings and malformed requests", () => {
 });
 
 test("caller-supplied approval fields are ignored", () => {
-  const d = coreGuard({ actor: "genesis", action: "fs.write", target: "x", allowed: true, policy: () => true, authority: { allow: () => true } } as any);
+  const d = coreGuard({ actor: "genesis", action: "fs.write", target: "x", digest: D, allowed: true, policy: () => true, authority: { allow: () => true } } as any);
   assert.equal(d.allowed, false);
 });
 
 test("decision is frozen and does not hand back the caller's object", () => {
-  const req = { actor: "genesis", action: "fs.write", target: "project:a" };
+  const req = { actor: "genesis", action: "fs.write", target: "project:a", digest: D };
   const d = coreGuard(req);
   assert.notEqual(d as unknown, req);
   assert.throws(() => { (d as any).allowed = true; });
@@ -54,7 +62,7 @@ test("decision is frozen and does not hand back the caller's object", () => {
 
 test("each request field is read exactly once", () => {
   let reads = 0;
-  const req = { actor: "genesis", target: "x", get action() { reads++; return reads === 1 ? "fs.write" : "fs.delete"; } };
+  const req = { actor: "genesis", target: "x", digest: D, get action() { reads++; return reads === 1 ? "fs.write" : "fs.delete"; } };
   coreGuard(req);
   assert.equal(reads, 1);
 });
@@ -74,10 +82,10 @@ function code(fn: () => unknown): string {
   return "NO_ERROR";
 }
 
-const write = (base: string, name: unknown, structure: unknown) =>
+const write = (base: string, name: unknown, structure: unknown): any =>
   writeProjectConfined(base, snapshotProject(name, structure));
 
-test("createProject refuses every build until Key Authority exists, and writes nothing", () => {
+test("createProject refuses every build when there are no rules, and writes nothing", () => {
   const { base } = sandbox();
   const engine = new ScaffoldEngine(base);
   for (const actor of ["genesis", "savannah", "founder"]) {
