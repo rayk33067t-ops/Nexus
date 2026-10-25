@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "scripts": {
     "start": "ts-node src/genesis/run.ts",
-    "test": "node --test --require ts-node/register tests/*.test.ts"
+    "test": "node --test --require ts-node/register tests/*.test.ts",
+    "authority": "ts-node src/genesis/authority/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",

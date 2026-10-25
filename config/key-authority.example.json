@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "rules": [
+    { "id": "genesis-new-projects", "actor": "genesis",  "action": "fs.write",         "target": "project:*", "effect": "allow" },
+    { "id": "keys-always-ask",      "actor": "*",        "action": "key.use",          "target": "**",        "effect": "ask"   },
+    { "id": "chronicle-ask",        "actor": "genesis",  "action": "chronicle.append", "target": "**",        "effect": "ask"   },
+    { "id": "savannah-never-writes","actor": "savannah", "action": "*",                "target": "**",        "effect": "deny"  }
+  ]
+}

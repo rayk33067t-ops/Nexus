@@ -4,3 +4,6 @@ build
 *.log
 .DS_Store
 npm-debug.log*
+
+# Key Authority runtime state (pending requests, approvals, lockdown)
+.nexus/

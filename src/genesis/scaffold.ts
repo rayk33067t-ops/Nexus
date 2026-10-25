@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { coreGuard } from "./guards/coreGuard";
+import { digestOf } from "./authority/canonical";
+import { reportHostile } from "./authority/KeyAuthority";
 
 /**
  * ScaffoldEngine — writes a generated project under one authorized root.
@@ -9,8 +11,11 @@ import { coreGuard } from "./guards/coreGuard";
  *  - Every build is first copied into a private, frozen snapshot. The guard
  *    is asked about the snapshot, and only the snapshot is written; the
  *    caller's structure object is never read again after the copy.
- *  - Every build must pass coreGuard with action "fs.write". Key Authority
- *    does not exist yet, so createProject currently always refuses.
+ *  - Every build must pass coreGuard with action "fs.write" and the digest
+ *    of its snapshot (plus the resolved output root), so a founder approval
+ *    covers exactly that plan in exactly that place.
+ *  - A plan with a traversal, absolute or otherwise unsafe path is reported
+ *    to Key Authority as hostile, which puts NEXUS into lockdown.
  *  - A guard allow is not trusted on its own: writeProjectConfined still
  *    performs every filesystem check below at the moment of use.
  *  - The whole structure is validated before anything touches the disk.
@@ -44,12 +49,17 @@ const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export class ScaffoldError extends Error {
   code: string;
-  constructor(code: string, message: string) {
+  /** Set on APPROVAL_REQUIRED: the id the founder approves. */
+  requestId: string | null;
+  constructor(code: string, message: string, requestId: string | null = null) {
     super(message);
     this.name = "ScaffoldError";
     this.code = code;
+    this.requestId = requestId;
   }
 }
+
+const HOSTILE_CODES = new Set(["INVALID_PATH", "INVALID_PROJECT_NAME", "UNSAFE_PATH"]);
 
 export interface ScaffoldFile {
   path: string;
@@ -270,6 +280,12 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): S
   return { project: name, path: projectRoot, filesCreated: written.length, files: written };
 }
 
+/** Human-readable description of a snapshot, shown to the founder. */
+export function describeSnapshot(snap: ProjectSnapshot): string {
+  const lines = snap.files.map((f) => `- ${f.rel} (${Buffer.byteLength(f.content, "utf-8")} bytes)`);
+  return `Create project "${snap.project}" with ${snap.files.length} file(s):\n${lines.join("\n")}`;
+}
+
 export class ScaffoldEngine {
   readonly basePath: string;
 
@@ -279,15 +295,51 @@ export class ScaffoldEngine {
   }
 
   /**
-   * Genesis proposes a build; coreGuard decides. With no Key Authority yet,
-   * this always throws GUARD_DENIED and writes nothing.
+   * Genesis proposes a build; coreGuard asks Key Authority. Throws
+   * GUARD_DENIED when refused, or APPROVAL_REQUIRED (with requestId) when
+   * the founder must approve this exact plan first.
    */
   createProject(projectName: string, structure: unknown, actor: string = "genesis"): ScaffoldResult {
-    const snap = snapshotProject(projectName, structure);
-    const decision = coreGuard({ actor, action: "fs.write", target: `project:${snap.project}` });
+    let snap: ProjectSnapshot;
+    try {
+      snap = snapshotProject(projectName, structure);
+    } catch (err) {
+      this.reportIfHostile(err, actor, String(projectName));
+      throw err;
+    }
+
+    const root = path.resolve(this.basePath);
+    const target = `project:${snap.project}`;
+    const decision = coreGuard({
+      actor,
+      action: "fs.write",
+      target,
+      digest: digestOf({ root, project: snap.project, files: snap.files.map((f) => ({ path: f.rel, content: f.content })) }),
+      summary: `${describeSnapshot(snap)}\nInto: ${root}`,
+    });
+
+    if (decision.pending) {
+      throw new ScaffoldError(
+        "APPROVAL_REQUIRED",
+        `Build of ${snap.project} needs founder approval (request ${decision.requestId}): ${decision.reason}.`,
+        decision.requestId
+      );
+    }
     if (!decision.allowed) {
       throw new ScaffoldError("GUARD_DENIED", `Build of ${snap.project} was not authorized: ${decision.reason}.`);
     }
-    return writeProjectConfined(this.basePath, snap);
+
+    try {
+      return writeProjectConfined(this.basePath, snap);
+    } catch (err) {
+      this.reportIfHostile(err, actor, target);
+      throw err;
+    }
+  }
+
+  private reportIfHostile(err: unknown, actor: string, target: string): void {
+    if (err instanceof ScaffoldError && HOSTILE_CODES.has(err.code)) {
+      reportHostile({ actor, action: "fs.write", target, reason: `${err.code}: ${err.message}` });
+    }
   }
 }
