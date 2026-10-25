@@ -5,7 +5,9 @@
     "start": "ts-node src/genesis/run.ts",
     "test": "node --test --require ts-node/register tests/*.test.ts",
     "authority": "ts-node src/genesis/authority/cli.ts",
-    "warden": "ts-node src/genesis/warden/cli.ts"
+    "warden": "ts-node src/genesis/warden/cli.ts",
+    "worlds": "ts-node src/genesis/worlds/registry.ts",
+    "dashboard": "node dashboard/server.js"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",

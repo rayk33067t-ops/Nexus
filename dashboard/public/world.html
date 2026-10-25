@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NEXUS World</title>
+  <link rel="stylesheet" href="/spine/spine.css">
+</head>
+<body>
+  <main class="shell">
+    <div class="topbar">
+      <a class="brand" href="/">← All worlds</a>
+      <button class="btn" id="replay" type="button" hidden>Replay intro</button>
+    </div>
+    <header class="hero" id="hero">
+      <p class="eyebrow" id="status"></p>
+      <h1 id="name">Entering…</h1>
+      <p id="purpose"></p>
+    </header>
+    <div id="content"></div>
+  </main>
+  <script type="module" src="/spine/world.js"></script>
+</body>
+</html>
