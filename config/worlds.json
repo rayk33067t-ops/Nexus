@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "note": "Every NEXUS world opens with a cinematic hero intro. Leave intro.scene empty to use the built-in cinematic; paste a Spline scene URL (Export > Code > Vanilla JS, ending in .splinecode) to use your own.",
+  "worlds": [
+    {
+      "id": "genesis-core",
+      "name": "Genesis Core",
+      "status": "active",
+      "purpose": "Lead intelligence and coordination layer",
+      "intro": { "scene": "", "durationMs": 7000, "tagline": "The mind that coordinates NEXUS", "palette": ["#7c5cff", "#2de2e6", "#0b0a1f"] }
+    },
+    {
+      "id": "genext",
+      "name": "GENEXT",
+      "status": "active",
+      "purpose": "Tool intelligence and development resource management",
+      "intro": { "scene": "", "durationMs": 6000, "tagline": "Every tool, ready", "palette": ["#00d68f", "#c6ff3d", "#06140f"] }
+    },
+    {
+      "id": "chronicle",
+      "name": "Chronicle",
+      "status": "active",
+      "purpose": "Preserve and present the history of NEXUS",
+      "intro": { "scene": "", "durationMs": 8000, "tagline": "Every day of NEXUS, remembered", "palette": ["#f5c76b", "#ff7a59", "#120b06"] }
+    },
+    {
+      "id": "command-chamber",
+      "name": "Command Chamber",
+      "status": "developing",
+      "purpose": "Living control room for NEXUS agents",
+      "intro": { "scene": "", "durationMs": 7000, "tagline": "Where the agents report", "palette": ["#ff4d6d", "#ffd166", "#14070b"] }
+    },
+    {
+      "id": "orb-chamber",
+      "name": "Orb Chamber",
+      "status": "future",
+      "purpose": "The visual and interactive intelligence experience",
+      "intro": { "scene": "", "durationMs": 7000, "tagline": "Intelligence you can see", "palette": ["#4cc9f0", "#b5179e", "#060a1a"] }
+    },
+    {
+      "id": "gameflix",
+      "name": "GameFlix",
+      "status": "future",
+      "purpose": "Gaming universe and entertainment ecosystem",
+      "intro": { "scene": "", "durationMs": 6000, "tagline": "Press start", "palette": ["#ff006e", "#3a86ff", "#0a0614"] }
+    },
+    {
+      "id": "artifacts",
+      "name": "Artifacts",
+      "status": "future",
+      "purpose": "Vault of creations, milestones, and keys",
+      "intro": { "scene": "", "durationMs": 6000, "tagline": "The vault opens", "palette": ["#e9c46a", "#2a9d8f", "#0a1110"] }
+    },
+    {
+      "id": "zrna",
+      "name": "zRNA",
+      "status": "future",
+      "purpose": "Future ecosystem utility layer",
+      "intro": { "scene": "", "durationMs": 6000, "tagline": "The code beneath it all", "palette": ["#80ffdb", "#5390d9", "#05101a"] }
+    },
+    {
+      "id": "nexus-forge",
+      "name": "NEXUS Forge",
+      "status": "future",
+      "purpose": "Creation, experimentation, and innovation space",
+      "intro": { "scene": "", "durationMs": 6000, "tagline": "Heat, hammer, make", "palette": ["#ff8c42", "#ffd23f", "#140a04"] }
+    },
+    {
+      "id": "lore-portal",
+      "name": "Lore Portal",
+      "status": "future",
+      "purpose": "Expansion gateway and fictional mythology layer",
+      "intro": { "scene": "", "durationMs": 8000, "tagline": "Step through", "palette": ["#c77dff", "#7bdff2", "#0c0614"] }
+    }
+  ]
+}
