@@ -1,62 +1,92 @@
 /**
- * coreGuard — deny-by-default gate.
+ * coreGuard — the default-deny gate in front of protected operations.
  *
- * There is no Key Authority yet, so this guard cannot grant anything on its
- * own. It allows a request only when the caller supplies an explicit policy
- * and that policy returns exactly `true`. Every other case is a denial:
- * no policy, a non-string input, a policy that throws, or a policy that
- * returns anything other than the boolean `true`.
+ * coreGuard is not the authority and its answer is not a capability:
+ *  - It decides nothing itself. Approval can only come from Key Authority.
+ *    Genesis may propose an operation and Savannah may challenge it, but no
+ *    caller can supply a policy, an authority, or an `allowed` value.
+ *  - It takes a structured request (who, what action, which target), copies
+ *    the primitive fields it needs, and never keeps or returns the caller's
+ *    object.
+ *  - It returns a frozen decision only: allowed or denied, plus the reason.
+ *    It does not write files, open paths, or append to the Chronicle.
+ *  - An allow is not permission to act later. The protected operation must
+ *    still do its own checks (root confinement, symlinks, the open itself)
+ *    at the moment of use, on its own private snapshot.
  *
- * Decisions are frozen so a caller cannot flip `allowed` after the fact.
+ * Key Authority does not exist yet, so every protected action is denied.
+ * Unknown actions are denied too.
  */
 
-export interface GuardPolicy {
-  /** Short name recorded in the decision, for audit trails. */
-  name: string;
-  /** Return exactly `true` to allow. Anything else denies. */
-  allow: (input: string) => boolean;
+export const PROTECTED_ACTIONS = Object.freeze([
+  "fs.write",
+  "key.use",
+  "chronicle.append",
+] as const);
+
+export type ProtectedAction = (typeof PROTECTED_ACTIONS)[number];
+
+export interface GuardRequest {
+  /** Who is asking, e.g. "genesis". */
+  actor: string;
+  /** What they want to do; must be one of PROTECTED_ACTIONS. */
+  action: string;
+  /** What it applies to, e.g. a project name or a path relative to a root. */
+  target: string;
 }
 
 export interface GuardDecision {
   readonly allowed: boolean;
   readonly reason: string;
-  readonly policy: string | null;
-  readonly input: string;
+  readonly actor: string;
+  readonly action: string;
+  readonly target: string;
 }
 
-function decide(
-  allowed: boolean,
-  reason: string,
-  policy: string | null,
-  input: string
-): GuardDecision {
-  return Object.freeze({ allowed, reason, policy, input });
+/**
+ * Placeholder for Key Authority. Intentionally null and not exported: when
+ * Key Authority is built, it replaces this constant in source, under review,
+ * rather than being injected at runtime.
+ */
+const KEY_AUTHORITY: null = null;
+
+const MAX_FIELD = 1024;
+
+function field(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_FIELD) return null;
+  if (value.includes("\0")) return null;
+  return value;
 }
 
-export function coreGuard(input: unknown, policy?: GuardPolicy): GuardDecision {
-  if (typeof input !== "string") {
-    return decide(false, "input must be a string", null, "");
+function deny(reason: string, actor = "", action = "", target = ""): GuardDecision {
+  return Object.freeze({ allowed: false, reason, actor, action, target });
+}
+
+export function coreGuard(request: unknown): GuardDecision {
+  if (!request || typeof request !== "object") {
+    return deny("request must be an object with actor, action and target");
   }
 
-  if (
-    !policy ||
-    typeof policy !== "object" ||
-    typeof policy.allow !== "function"
-  ) {
-    return decide(false, "no policy supplied; denied by default", null, input);
+  // Copy the fields once; nothing below touches the caller's object again.
+  const r = request as Record<string, unknown>;
+  const actor = field(r.actor);
+  const action = field(r.action);
+  const target = field(r.target);
+
+  if (actor === null || action === null || target === null) {
+    return deny("actor, action and target must be non-empty strings");
   }
 
-  const name = typeof policy.name === "string" ? policy.name : "unnamed";
-
-  let verdict: unknown;
-  try {
-    verdict = policy.allow(input);
-  } catch {
-    return decide(false, "policy threw; denied", name, input);
+  if (!(PROTECTED_ACTIONS as readonly string[]).includes(action)) {
+    return deny(`unknown action "${action}"`, actor, action, target);
   }
 
-  if (verdict === true) {
-    return decide(true, "allowed by policy", name, input);
+  if (KEY_AUTHORITY === null) {
+    return deny("Key Authority is not implemented; protected actions are denied", actor, action, target);
   }
-  return decide(false, "policy did not allow", name, input);
+
+  // Unreachable until Key Authority exists. Kept as a deny so that adding
+  // the authority is the only way this function can ever return allowed.
+  return deny("Key Authority did not approve", actor, action, target);
 }

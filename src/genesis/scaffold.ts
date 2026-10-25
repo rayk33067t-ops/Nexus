@@ -1,10 +1,18 @@
 import fs from "fs";
 import path from "path";
+import { coreGuard } from "./guards/coreGuard";
 
 /**
  * ScaffoldEngine — writes a generated project under one authorized root.
  *
  * Safety properties:
+ *  - Every build is first copied into a private, frozen snapshot. The guard
+ *    is asked about the snapshot, and only the snapshot is written; the
+ *    caller's structure object is never read again after the copy.
+ *  - Every build must pass coreGuard with action "fs.write". Key Authority
+ *    does not exist yet, so createProject currently always refuses.
+ *  - A guard allow is not trusted on its own: writeProjectConfined still
+ *    performs every filesystem check below at the moment of use.
  *  - The whole structure is validated before anything touches the disk.
  *  - Project names are a single plain path segment; file paths are relative,
  *    use "/" separators, and may not contain "..", ".", empty segments,
@@ -56,9 +64,15 @@ export interface ScaffoldResult {
 }
 
 interface PlannedFile {
-  rel: string;
-  segments: string[];
-  content: string;
+  readonly rel: string;
+  readonly segments: readonly string[];
+  readonly content: string;
+}
+
+/** A validated, deep-frozen copy of a build request. */
+export interface ProjectSnapshot {
+  readonly project: string;
+  readonly files: readonly PlannedFile[];
 }
 
 export function validateProjectName(name: unknown): string {
@@ -140,7 +154,7 @@ function planStructure(structure: unknown): PlannedFile[] {
       dirPaths.add(dir);
     }
     filePaths.add(key);
-    planned.push({ rel: key, segments, content });
+    planned.push(Object.freeze({ rel: key, segments: Object.freeze(segments.slice()), content }));
   }
   return planned;
 }
@@ -176,81 +190,104 @@ function descriptorPath(fd: number): string | null {
   }
 }
 
+/** Validate a build request and copy it into a private, frozen snapshot. */
+export function snapshotProject(projectName: unknown, structure: unknown): ProjectSnapshot {
+  const project = validateProjectName(projectName);
+  const files = planStructure(structure);
+  return Object.freeze({ project, files: Object.freeze(files) });
+}
+
+/**
+ * Write a snapshot under basePath with every confinement check applied.
+ * This function does not authorize anything: callers must have a coreGuard
+ * allow first. In this codebase only ScaffoldEngine calls it (and the tests).
+ * Module exports are not a security boundary against code already running
+ * in this process; the guard governs the Genesis path, not hostile code.
+ */
+export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): ScaffoldResult {
+  const name = snap.project;
+  const plan = snap.files;
+
+  fs.mkdirSync(basePath, { recursive: true });
+  const root = fs.realpathSync(basePath);
+  const projectRoot = path.join(root, name);
+
+  try {
+    fs.mkdirSync(projectRoot, { mode: 0o755 });
+  } catch (err: any) {
+    if (err?.code === "EEXIST") {
+      throw new ScaffoldError("PROJECT_EXISTS", `Project already exists: ${name}`);
+    }
+    throw err;
+  }
+
+  const written: string[] = [];
+  const flags =
+    fs.constants.O_WRONLY |
+    fs.constants.O_CREAT |
+    fs.constants.O_EXCL |
+    (fs.constants.O_NOFOLLOW ?? 0);
+
+  try {
+    for (const file of plan) {
+      const dir = ensureDirectories(projectRoot, file.segments.slice(0, -1));
+      const target = path.join(dir, file.segments[file.segments.length - 1]);
+      if (!isInside(projectRoot, target)) {
+        throw new ScaffoldError("UNSAFE_PATH", `Resolved path leaves the project: ${file.rel}`);
+      }
+
+      let fd: number;
+      try {
+        fd = fs.openSync(target, flags, 0o644);
+      } catch (err: any) {
+        if (err?.code === "EEXIST" || err?.code === "ELOOP") {
+          throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: target already exists or is a symlink.`);
+        }
+        throw err;
+      }
+
+      try {
+        if (!fs.fstatSync(fd).isFile()) {
+          throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: not a regular file.`);
+        }
+        const real = descriptorPath(fd);
+        if (real !== null && !isInside(projectRoot, real)) {
+          throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: opened file is outside the project (${real}).`);
+        }
+        fs.writeSync(fd, file.content, null, "utf-8");
+      } finally {
+        fs.closeSync(fd);
+      }
+      written.push(file.rel);
+    }
+  } catch (err: any) {
+    if (err instanceof ScaffoldError) {
+      err.message += ` (${written.length} of ${plan.length} files were written before stopping)`;
+    }
+    throw err;
+  }
+
+  return { project: name, path: projectRoot, filesCreated: written.length, files: written };
+}
+
 export class ScaffoldEngine {
-  basePath: string;
+  readonly basePath: string;
 
   constructor(basePath: string = "output/projects") {
     this.basePath = basePath;
+    Object.freeze(this);
   }
 
-  createProject(projectName: string, structure: unknown): ScaffoldResult {
-    const name = validateProjectName(projectName);
-    const plan = planStructure(structure);
-
-    fs.mkdirSync(this.basePath, { recursive: true });
-    const root = fs.realpathSync(this.basePath);
-    const projectRoot = path.join(root, name);
-
-    try {
-      fs.mkdirSync(projectRoot, { mode: 0o755 });
-    } catch (err: any) {
-      if (err?.code === "EEXIST") {
-        throw new ScaffoldError("PROJECT_EXISTS", `Project already exists: ${name}`);
-      }
-      throw err;
+  /**
+   * Genesis proposes a build; coreGuard decides. With no Key Authority yet,
+   * this always throws GUARD_DENIED and writes nothing.
+   */
+  createProject(projectName: string, structure: unknown, actor: string = "genesis"): ScaffoldResult {
+    const snap = snapshotProject(projectName, structure);
+    const decision = coreGuard({ actor, action: "fs.write", target: `project:${snap.project}` });
+    if (!decision.allowed) {
+      throw new ScaffoldError("GUARD_DENIED", `Build of ${snap.project} was not authorized: ${decision.reason}.`);
     }
-
-    const written: string[] = [];
-    const flags =
-      fs.constants.O_WRONLY |
-      fs.constants.O_CREAT |
-      fs.constants.O_EXCL |
-      (fs.constants.O_NOFOLLOW ?? 0);
-
-    try {
-      for (const file of plan) {
-        const dir = ensureDirectories(projectRoot, file.segments.slice(0, -1));
-        const target = path.join(dir, file.segments[file.segments.length - 1]);
-        if (!isInside(projectRoot, target)) {
-          throw new ScaffoldError("UNSAFE_PATH", `Resolved path leaves the project: ${file.rel}`);
-        }
-
-        let fd: number;
-        try {
-          fd = fs.openSync(target, flags, 0o644);
-        } catch (err: any) {
-          if (err?.code === "EEXIST" || err?.code === "ELOOP") {
-            throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: target already exists or is a symlink.`);
-          }
-          throw err;
-        }
-
-        try {
-          if (!fs.fstatSync(fd).isFile()) {
-            throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: not a regular file.`);
-          }
-          const real = descriptorPath(fd);
-          if (real !== null && !isInside(projectRoot, real)) {
-            throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: opened file is outside the project (${real}).`);
-          }
-          fs.writeSync(fd, file.content, null, "utf-8");
-        } finally {
-          fs.closeSync(fd);
-        }
-        written.push(file.rel);
-      }
-    } catch (err: any) {
-      if (err instanceof ScaffoldError) {
-        err.message += ` (${written.length} of ${plan.length} files were written before stopping)`;
-      }
-      throw err;
-    }
-
-    return {
-      project: name,
-      path: projectRoot,
-      filesCreated: written.length,
-      files: written,
-    };
+    return writeProjectConfined(this.basePath, snap);
   }
 }
