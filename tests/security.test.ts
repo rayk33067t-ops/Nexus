@@ -18,41 +18,55 @@ const {
   snapshotProject,
   writeProjectConfined,
 } = require("../src/genesis/scaffold");
+const { issue } = require("./support");
 
 const D = "sha256:" + "0".repeat(64);
+
+// Real agents, each with its own credential. Requests are signed, never named.
+const signers: Record<string, any> = { genesis: issue("genesis"), savannah: issue("savannah") };
+const signed = (agent: string, over: object = {}) => signers[agent].sign({ action: "fs.write", target: "project:demo", digest: D, ...over });
 
 // ---------- coreGuard: default deny, structured request, decision only ----------
 
 test("guard denies every protected action when there is no rules file", () => {
   for (const action of PROTECTED_ACTIONS) {
-    for (const actor of ["genesis", "savannah", "founder"]) {
-      const d = coreGuard({ actor, action, target: "project:demo", digest: D });
-      assert.equal(d.allowed, false, `${actor} ${action}`);
+    for (const agent of ["genesis", "savannah"]) {
+      const d = coreGuard(signed(agent, { action }));
+      assert.equal(d.allowed, false, `${agent} ${action}`);
       assert.match(d.reason, /no usable rules/);
+      assert.equal(d.actor, agent);
     }
   }
 });
 
 test("guard denies unknown actions", () => {
-  const d = coreGuard({ actor: "genesis", action: "fs.delete", target: "x", digest: D });
+  const d = coreGuard(signed("genesis", { action: "fs.delete", target: "x" }));
   assert.equal(d.allowed, false);
   assert.match(d.reason, /unknown action/);
 });
 
-test("guard rejects raw strings and malformed requests", () => {
-  for (const bad of ["build login system", null, undefined, 42, {}, { actor: "", action: "fs.write", target: "x" },
-                     { actor: "genesis", action: "fs.write", target: 5 }, { actor: "g\0", action: "fs.write", target: "x" }]) {
+test("guard rejects raw strings, unsigned and malformed requests", () => {
+  for (const bad of ["build login system", null, undefined, 42, {}, { action: "fs.write", target: "x", digest: D },
+                     { action: "fs.write", target: 5, digest: D }, { action: "fs.write", target: "x\0", digest: D }]) {
     assert.equal(coreGuard(bad).allowed, false, JSON.stringify(bad));
   }
 });
 
+test("a request that names its own actor is refused, even when validly signed", () => {
+  for (const name of ["genesis", "founder", "savannah"]) {
+    const d = coreGuard({ ...signed("genesis"), actor: name });
+    assert.equal(d.allowed, false);
+    assert.match(d.reason, /may not name their own actor/);
+  }
+});
+
 test("caller-supplied approval fields are ignored", () => {
-  const d = coreGuard({ actor: "genesis", action: "fs.write", target: "x", digest: D, allowed: true, policy: () => true, authority: { allow: () => true } } as any);
+  const d = coreGuard({ ...signed("genesis", { target: "x" }), allowed: true, policy: () => true, authority: { allow: () => true } } as any);
   assert.equal(d.allowed, false);
 });
 
 test("decision is frozen and does not hand back the caller's object", () => {
-  const req = { actor: "genesis", action: "fs.write", target: "project:a", digest: D };
+  const req = signed("genesis", { target: "project:a" });
   const d = coreGuard(req);
   assert.notEqual(d as unknown, req);
   assert.throws(() => { (d as any).allowed = true; });
@@ -62,7 +76,10 @@ test("decision is frozen and does not hand back the caller's object", () => {
 
 test("each request field is read exactly once", () => {
   let reads = 0;
-  const req = { actor: "genesis", target: "x", digest: D, get action() { reads++; return reads === 1 ? "fs.write" : "fs.delete"; } };
+  const base = signed("genesis", { target: "x" });
+  const req = { ...base };
+  delete (req as any).action;
+  Object.defineProperty(req, "action", { enumerable: true, get() { reads++; return reads === 1 ? "fs.write" : "fs.delete"; } });
   coreGuard(req);
   assert.equal(reads, 1);
 });
@@ -87,22 +104,23 @@ const write = (base: string, name: unknown, structure: unknown): any =>
 
 test("createProject refuses every build when there are no rules, and writes nothing", () => {
   const { base } = sandbox();
-  const engine = new ScaffoldEngine(base);
-  for (const actor of ["genesis", "savannah", "founder"]) {
-    assert.equal(code(() => engine.createProject("demo", { files: [{ path: "a.txt", content: "a" }] }, actor)), "GUARD_DENIED");
+  for (const agent of ["genesis", "savannah"]) {
+    const engine = new ScaffoldEngine(base, signers[agent]);
+    assert.equal(code(() => engine.createProject("demo", { files: [{ path: "a.txt", content: "a" }] })), "GUARD_DENIED");
   }
+  assert.equal(code(() => new ScaffoldEngine(base).createProject("demo", { files: [{ path: "a.txt", content: "a" }] })), "GUARD_DENIED");
   assert.equal(fs.existsSync(path.join(base, "demo")), false);
 });
 
 test("createProject validates before asking the guard", () => {
   const { base } = sandbox();
-  const engine = new ScaffoldEngine(base);
+  const engine = new ScaffoldEngine(base, signers.genesis);
   assert.equal(code(() => engine.createProject("demo", { files: [{ path: "../x", content: "x" }] })), "INVALID_PATH");
 });
 
 test("engine base path cannot be swapped after construction", () => {
   const { base, outside } = sandbox();
-  const engine = new ScaffoldEngine(base);
+  const engine = new ScaffoldEngine(base, signers.genesis);
   assert.throws(() => { (engine as any).basePath = outside; });
 });
 

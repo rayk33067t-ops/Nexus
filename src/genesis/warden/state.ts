@@ -3,6 +3,7 @@ import path from "path";
 
 import { DIRS, LOCKDOWN_FILE, LockdownRecord, PATHS, listJSON, readJSON, writeJSONAtomic } from "../authority/store";
 import { appendLog } from "./log";
+import { consumeProof } from "./passphrase";
 
 /**
  * Warden state: each agent's status, the signals that count against it, and
@@ -14,8 +15,9 @@ import { appendLog } from "./log";
  *   probation    released by the founder; every action needs approval
  *
  * Containment never needs the agent's cooperation, and recovery never
- * happens automatically: only the founder CLI moves an agent out of
- * quarantine.
+ * happens automatically. Making an agent stricter (quarantine) needs
+ * nothing; making it less strict (probation or active) needs a Founder proof,
+ * which only exists after the passphrase was checked (warden/passphrase).
  */
 
 export const WARDEN_DIR = path.join(PATHS.stateDir, "warden");
@@ -65,9 +67,23 @@ export function getAgent(agent: string): AgentRecord {
   return { agent, status: "active", since: "", reasons: [] };
 }
 
-export function setAgent(rec: AgentRecord): void {
+function setAgent(rec: AgentRecord): void {
   if (!AGENT_RE.test(rec.agent)) throw new Error(`Not a valid agent name: ${rec.agent}`);
   writeJSONAtomic(agentFile(rec.agent), rec);
+}
+
+/**
+ * Move an agent out of quarantine or probation. Needs a single-use proof
+ * from requireFounder for "agent.release" or "agent.trust"; anything else,
+ * including an object that only looks like a proof, is refused and recorded.
+ */
+export function restoreAgent(rec: AgentRecord, proof: unknown): void {
+  if (rec.status === "quarantined") throw new Error("Use quarantine() to make an agent stricter.");
+  if (!consumeProof(proof, ["agent.release", "agent.trust"])) {
+    logEvent({ type: "founder-auth-failed", operation: "agent.restore", reason: "no valid founder proof" });
+    throw new Error("Restoring an agent needs the Founder passphrase.");
+  }
+  setAgent(rec);
 }
 
 export function allAgents(): AgentRecord[] {

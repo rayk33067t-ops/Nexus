@@ -9,49 +9,22 @@
  *   npm run warden -- release <agent>   quarantined → probation
  *   npm run warden -- trust <agent>     probation → active
  *   npm run warden -- lockdown:clear    end lockdown once no agent is quarantined
+ *   npm run warden -- issue <agent> [days]   issue (or replace) an agent's credential, default 90 days
+ *   npm run warden -- revoke <agent>    revoke an agent's credential at once
+ *   npm run warden -- credentials       list credentials (fingerprints only)
  *   npm run warden -- log [n]           show the last n events and check the chain
  *   npm run warden -- reset-log         archive a damaged log after reviewing it
+ *
+ * Every command that changes trust asks for the Founder passphrase, and the
+ * operation itself checks it too, not just this CLI.
  */
-
-import readline from "readline";
 
 import { verifyLog, readLog } from "./log";
 import { HEAD_FILE, LOG_FILE } from "./state";
 import { WardenReport, check } from "./Warden";
-import { clearLockdown, hasPassphrase, pin, release, resetLog, setPassphrase, trust } from "./founder";
-
-// One reader for the whole run. Lines are queued as they arrive, so typed
-// and piped answers both reach the prompt that asked for them.
-let rl: readline.Interface | null = null;
-let muted = false;
-const lines: string[] = [];
-const waiting: ((line: string) => void)[] = [];
-
-function reader(): readline.Interface {
-  if (rl) return rl;
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: !!process.stdin.isTTY });
-  const r = rl as unknown as { _writeToOutput: (s: string) => void; output: NodeJS.WritableStream };
-  r._writeToOutput = (s: string) => { if (!muted) r.output.write(s); };
-  rl.on("line", (line) => { const w = waiting.shift(); if (w) w(line); else lines.push(line); });
-  rl.on("close", () => { while (waiting.length) waiting.shift()!(""); });
-  return rl;
-}
-
-function ask(question: string): Promise<string> {
-  reader();
-  process.stdout.write(question);
-  muted = true;
-  return new Promise((resolve) => {
-    const done = (line: string) => { muted = false; process.stdout.write("\n"); resolve(line); };
-    const queued = lines.shift();
-    if (queued !== undefined) done(queued); else waiting.push(done);
-  });
-}
-
-function closeReader(): void {
-  rl?.close();
-  rl = null;
-}
+import { clearLockdown, hasPassphrase, issueCredential, pin, release, resetLog, revokeCredential, setPassphrase, trust } from "./founder";
+import { listCredentials } from "../authority/credentials";
+import { ask, closeReader } from "../cliPrompt";
 
 function print(r: WardenReport): void {
   console.log(`Code:  ${r.integrity.ok ? "OK" : "FAILED"}, ${r.integrity.detail}`);
@@ -65,7 +38,7 @@ function print(r: WardenReport): void {
 }
 
 async function main(argv: string[]): Promise<number> {
-  const [cmd, arg] = argv;
+  const [cmd, arg, arg2] = argv;
   switch (cmd) {
     case "status":
     case "check":
@@ -105,6 +78,28 @@ async function main(argv: string[]): Promise<number> {
     case "lockdown:clear":
       console.log(clearLockdown(await ask("Founder passphrase: ")) ? "Lockdown cleared." : "Not in lockdown.");
       return 0;
+    case "issue": {
+      const days = arg2 === undefined ? undefined : Number(arg2);
+      const c = issueCredential(arg ?? "", await ask("Founder passphrase: "), days);
+      console.log(`Issued a credential for ${c.agent}, valid until ${c.expiresAt}.`);
+      console.log(`Fingerprint: ${c.fingerprint}`);
+      console.log(`The private key is in ${c.keyFile} (readable only by this Termux user). Any earlier credential for ${c.agent} no longer works.`);
+      return 0;
+    }
+    case "revoke": {
+      const n = revokeCredential(arg ?? "", await ask("Founder passphrase: "));
+      console.log(n ? `Revoked ${n} credential(s) for ${arg}. Its requests are refused from now on.` : `${arg} had no active credential.`);
+      return 0;
+    }
+    case "credentials": {
+      const list = listCredentials();
+      if (!list.length) { console.log("No credentials issued yet. Issue one with: npm run warden -- issue genesis"); return 0; }
+      for (const c of list) {
+        const state = c.revokedAt ? `revoked ${c.revokedAt}` : Date.parse(c.expiresAt) <= Date.now() ? `expired ${c.expiresAt}` : `active until ${c.expiresAt}`;
+        console.log(`  ${c.agent.padEnd(10)} ${c.fingerprint.slice(0, 16)}…  ${state}`);
+      }
+      return 0;
+    }
     case "log": {
       const n = Math.max(1, Number(arg) || 20);
       for (const e of readLog(LOG_FILE).slice(-n)) console.log(`${e.seq}  ${e.at}  ${JSON.stringify(e.event)}`);
@@ -117,7 +112,7 @@ async function main(argv: string[]): Promise<number> {
       console.log(`Archived the old log to ${resetLog(await ask("Founder passphrase: "))}. A fresh chain has started.`);
       return 0;
     default:
-      console.log("Usage: npm run warden -- <status | check | watch [s] | init | pin | release <agent> | trust <agent> | lockdown:clear | log [n] | reset-log>");
+      console.log("Usage: npm run warden -- <status | check | watch [s] | init | pin | release <agent> | trust <agent> | lockdown:clear | issue <agent> [days] | revoke <agent> | credentials | log [n] | reset-log>");
       return cmd ? 1 : 0;
   }
 }

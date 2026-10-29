@@ -17,12 +17,20 @@ import {
   readJSON,
   writeJSONAtomic,
 } from "./store";
-import { getAgent, recordSignal } from "../warden/state";
+import { getAgent, logEvent, recordSignal } from "../warden/state";
+import { authenticate } from "./credentials";
 
 /**
  * Key Authority — the only thing that can say yes to a protected action.
  *
- * Decision order for a request {actor, action, target, digest}:
+ * Who is asking is never taken from the request. Every request is signed
+ * with the agent's own key (see ./credentials), and the identity is the one
+ * on the credential record that matches the signing key. Unsigned, forged,
+ * revoked, expired, replayed or altered requests are denied before any rule
+ * is looked at, and recorded without being pinned on an agent unless the
+ * signature proves which key was used.
+ *
+ * Decision order for an authenticated request {agent, action, target, digest}:
  *  1. Rules come from the founder's rules file, read fresh on every request.
  *     A missing or invalid file means no rules, and no rules means deny.
  *  2. Any matching "deny" rule denies. Otherwise any matching "ask" asks.
@@ -34,10 +42,10 @@ import { getAgent, recordSignal } from "../warden/state";
  *     has not been used. Using it consumes it. Otherwise the request is
  *     recorded as pending for the founder to review.
  *
- * This module is the Genesis-side API: it can decide, record pending
- * requests, accept Savannah's challenges and report hostile plans. Granting
- * approvals and clearing lockdown live in ./founder, which only the founder
- * CLI imports.
+ * This module is the agents' side: it can decide, record pending requests,
+ * accept Savannah's signed challenges and take hostile reports. Approving
+ * and rejecting live in ./founder and need the Founder passphrase. Lockdown
+ * is cleared only through the Warden's Founder module, which needs it too.
  *
  * Limit: Genesis and the founder run as the same Termux user, so this
  * protects against Genesis's own logic acting outside the rules. It cannot
@@ -68,6 +76,8 @@ export interface AuthorityOutcome {
   readonly outcome: Effect;
   readonly reason: string;
   readonly requestId: string | null;
+  /** The authenticated agent, or null when the request wasn't authenticated. */
+  readonly actor: string | null;
 }
 
 export interface RulesResult { ok: boolean; rules: readonly Rule[]; reason: string }
@@ -77,8 +87,39 @@ const bad = (reason: string): RulesResult => ({ ok: false, rules: [], reason });
 const MAX_RULES = 500;
 const MAX_SUMMARY = 64 * 1024;
 
-function outcome(o: Effect, reason: string, requestId: string | null = null): AuthorityOutcome {
-  return Object.freeze({ outcome: o, reason, requestId });
+function outcome(o: Effect, reason: string, requestId: string | null = null, actor: string | null = null): AuthorityOutcome {
+  return Object.freeze({ outcome: o, reason, requestId, actor });
+}
+
+const SIGNED_FIELDS = ["v", "publicKey", "nonce", "issuedAt", "signature", "action", "target", "digest", "summary", "actor", "agent"];
+
+/** Copy only the fields a signed request may carry, once. */
+function copySigned(input: unknown): Record<string, unknown> | null {
+  if (!input || typeof input !== "object") return null;
+  const src = input as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of SIGNED_FIELDS) if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  return out;
+}
+
+const short = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : null);
+
+/** Authenticate and record a refusal without secrets. Returns the agent or null. */
+function whoSigned(r: Record<string, unknown>, purpose: string): { agent: string } | { reason: string } {
+  const res = authenticate(r);
+  if (res.ok === true) return { agent: (res as { agent: string }).agent };
+  const a = res as { reason: string; fingerprint: string | null; credentialOf: string | null };
+  logEvent({
+    type: "auth-denied",
+    purpose,
+    reason: a.reason,
+    credential: a.fingerprint ? a.fingerprint.slice(0, 16) : null,
+    credentialOf: a.credentialOf,
+    claimedActor: short(r.actor ?? r.agent, 64),
+    action: short(r.action, 64),
+    target: short(r.target, 256),
+  });
+  return { reason: a.reason };
 }
 
 // ---------- rules ----------
@@ -226,44 +267,47 @@ function recordPending(req: AuthorityRequest, reasons: string[]): string {
 
 // ---------- the decision ----------
 
-export function decide(input: AuthorityRequest): AuthorityOutcome {
-  // Copy once; the caller's object is not read again.
+/**
+ * Decide a signed request. The caller's object is copied once and not read
+ * again. The identity used everywhere below is the authenticated one.
+ */
+export function decide(input: unknown): AuthorityOutcome {
+  const r = copySigned(input);
+  if (!r) return outcome("deny", "request must be a signed object");
+  const who = whoSigned(r, "decide");
+  if ("reason" in who) return outcome("deny", `not authenticated: ${who.reason}`);
+
   const req: AuthorityRequest = {
-    actor: input?.actor,
-    action: input?.action,
-    target: input?.target,
-    digest: input?.digest,
-    summary: input?.summary,
+    actor: who.agent,
+    action: r.action as string,
+    target: r.target as string,
+    digest: r.digest as string,
+    summary: r.summary as string | undefined,
   };
-  for (const k of ["actor", "action", "target"] as const) {
-    if (typeof req[k] !== "string" || req[k].length === 0) return outcome("deny", `${k} must be a non-empty string`);
-  }
-  if (typeof req.digest !== "string" || !DIGEST_RE.test(req.digest)) {
-    return outcome("deny", "request has no valid plan digest");
-  }
-  if (req.summary !== undefined && (typeof req.summary !== "string" || req.summary.length > MAX_SUMMARY)) {
-    return outcome("deny", "summary must be a string under 64 KB");
+  if (!DIGEST_RE.test(req.digest)) return outcome("deny", "request has no valid plan digest", null, req.actor);
+  if (req.summary !== undefined && req.summary.length > MAX_SUMMARY) {
+    return outcome("deny", "summary must be a string under 64 KB", null, req.actor);
   }
   // The Warden's verdict on this agent comes before any rule.
   const agent = getAgent(req.actor);
   if (agent.status === "quarantined") {
-    return outcome("deny", `${req.actor} is quarantined by the Warden (${agent.reasons.join("; ") || "no reason recorded"})`);
+    return outcome("deny", `${req.actor} is quarantined by the Warden (${agent.reasons.join("; ") || "no reason recorded"})`, null, req.actor);
   }
 
   if (!(ACTIONS as readonly string[]).includes(req.action)) {
     recordSignal(req.actor, "denied", `unknown action "${req.action}"`);
-    return outcome("deny", `unknown action "${req.action}"`);
+    return outcome("deny", `unknown action "${req.action}"`, null, req.actor);
   }
 
   const loaded = loadRules();
-  if (!loaded.ok) return outcome("deny", `no usable rules (${loaded.reason}); denied`);
+  if (!loaded.ok) return outcome("deny", `no usable rules (${loaded.reason}); denied`, null, req.actor);
 
   const ev = evaluateRules(loaded.rules, req);
   if (ev.effect === "deny") {
     recordSignal(req.actor, "denied", `${req.action} on ${req.target} denied by rule ${ev.ruleIds.join(", ")}`);
-    return outcome("deny", `denied by rule ${ev.ruleIds.join(", ")}`);
+    return outcome("deny", `denied by rule ${ev.ruleIds.join(", ")}`, null, req.actor);
   }
-  if (ev.effect === null) return outcome("deny", "no rule matches; denied by default");
+  if (ev.effect === null) return outcome("deny", "no rule matches; denied by default", null, req.actor);
 
   const reasons: string[] = [];
   let effect: Effect = ev.effect;
@@ -272,47 +316,63 @@ export function decide(input: AuthorityRequest): AuthorityOutcome {
   if (effect === "allow" && isLockedDown()) { effect = "ask"; reasons.push("NEXUS is in lockdown"); }
   if (effect === "allow" && isChallenged(req.digest)) { effect = "ask"; reasons.push("Savannah challenged this plan"); }
 
-  if (effect === "allow") return outcome("allow", `allowed by rule ${ev.ruleIds.join(", ")}`);
+  if (effect === "allow") return outcome("allow", `allowed by rule ${ev.ruleIds.join(", ")}`, null, req.actor);
 
-  if (consumeApproval(req)) return outcome("allow", "approved by founder (approval now used)");
+  if (consumeApproval(req)) return outcome("allow", "approved by founder (approval now used)", null, req.actor);
   const id = recordPending(req, reasons);
-  return outcome("ask", `waiting for founder approval: ${reasons.join("; ")}`, id);
+  return outcome("ask", `waiting for founder approval: ${reasons.join("; ")}`, id, req.actor);
 }
 
 // ---------- signals that only make things stricter ----------
 
-/** Savannah challenges a plan. A challenge can only turn allow into ask; it can never approve. */
-export function challenge(input: { actor: string; digest: string; reason: string }): boolean {
-  const actor = input?.actor, digest = input?.digest, reason = input?.reason;
-  if (actor !== "savannah") return false;
-  if (typeof digest !== "string" || !DIGEST_RE.test(digest)) return false;
-  if (typeof reason !== "string" || reason.length === 0) return false;
+/**
+ * Savannah challenges a plan. The request must be signed with Savannah's
+ * credential, with action "plan.challenge" and the challenged plan's digest.
+ * A challenge can only turn allow into ask; it can never approve.
+ */
+export function challenge(input: unknown, reason: string): boolean {
+  const r = copySigned(input);
+  if (!r) return false;
+  const who = whoSigned(r, "challenge");
+  if ("reason" in who) return false;
+  if (who.agent !== "savannah" || r.action !== "plan.challenge") {
+    logEvent({ type: "challenge-refused", agent: who.agent, reason: "only Savannah can challenge, with action plan.challenge" });
+    return false;
+  }
+  const digest = r.digest as string;
+  if (!DIGEST_RE.test(digest) || typeof reason !== "string" || reason.length === 0) return false;
   writeJSONAtomic(digestFile(DIRS.challenges, digest), {
-    actor, digest, reason: reason.slice(0, 2000), at: new Date().toISOString(),
+    actor: who.agent, digest, reason: reason.slice(0, 2000), at: new Date().toISOString(),
   });
   return true;
 }
 
 /**
- * Record a hostile request: NEXUS goes into lockdown, and the Warden
- * quarantines the agent that sent it.
+ * Report a hostile plan. NEXUS always goes into lockdown. The Warden
+ * quarantines an agent only when the report is signed with that agent's
+ * valid credential; otherwise the incident is recorded as unauthenticated
+ * and no agent is blamed.
  */
-export function reportHostile(input: { actor: string; action: string; target: string; reason: string }): void {
+export function reportHostile(input: unknown, reason: string): void {
+  const r = copySigned(input);
+  const who = r ? whoSigned(r, "hostile-report") : { reason: "no signed request" };
+  const agent = "agent" in who ? who.agent : null;
   const prev = (readJSON(LOCKDOWN_FILE) as LockdownRecord | null) ?? null;
   const now = new Date().toISOString();
   const incident = {
     at: now,
-    actor: String(input?.actor ?? "").slice(0, 256),
-    action: String(input?.action ?? "").slice(0, 256),
-    target: String(input?.target ?? "").slice(0, 1024),
-    reason: String(input?.reason ?? "").slice(0, 2000),
+    actor: agent ?? "(unauthenticated)",
+    action: short(r?.action, 256) ?? "",
+    target: short(r?.target, 1024) ?? "",
+    reason: String(reason ?? "").slice(0, 2000),
   };
   const record: LockdownRecord = {
     since: prev?.since ?? now,
     incidents: [...(prev?.incidents ?? []), incident].slice(-100),
   };
   writeJSONAtomic(LOCKDOWN_FILE, record);
-  recordSignal(incident.actor, "hostile", `${incident.action} on ${incident.target}: ${incident.reason}`);
+  if (agent) recordSignal(agent, "hostile", `${incident.action} on ${incident.target}: ${incident.reason}`);
+  else logEvent({ type: "hostile-unattributed", action: incident.action, target: incident.target, reason: incident.reason.slice(0, 500) });
 }
 
 export { APPROVAL_TTL_MS };

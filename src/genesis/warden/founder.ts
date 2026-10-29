@@ -2,58 +2,36 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
-import { LOCKDOWN_FILE, readJSON, writeJSONAtomic } from "../authority/store";
+import { LOCKDOWN_FILE, ensureDir, writeJSONAtomic } from "../authority/store";
+import {
+  CRED_DIR,
+  CredentialRecord,
+  DEFAULT_TTL_DAYS,
+  KEYS_DIR,
+  fingerprintOf,
+  keyFile,
+  listCredentials,
+  recordFile,
+  validAgentName,
+} from "../authority/credentials";
 import { manifest } from "./integrity";
 import { tamperFile, verifyLog } from "./log";
-import { AGENT_RE, BASELINE_FILE, HEAD_FILE, LOG_FILE, SECRET_FILE, WARDEN_DIR, allAgents, getAgent, logEvent, setAgent } from "./state";
+import { hasPassphrase, requireFounder, setPassphrase, verifyPassphrase } from "./passphrase";
+import { AGENT_RE, BASELINE_FILE, HEAD_FILE, LOG_FILE, WARDEN_DIR, allAgents, getAgent, logEvent, restoreAgent } from "./state";
 import { Baseline, ROOT, check } from "./Warden";
 
 /**
- * Founder-only Warden operations. Each one that restores trust needs the
- * founder passphrase, which is never stored: only a slow scrypt hash of it
- * is. Only the Warden CLI imports this module; a test enforces that.
+ * Founder-only Warden operations. Every one that changes trust checks the
+ * Founder passphrase itself (warden/passphrase), so calling it directly
+ * without the passphrase fails and changes nothing. Only the Warden CLI
+ * imports this module; a test enforces that.
  */
 
-const SCRYPT = { N: 1 << 15, r: 8, p: 1, keylen: 32, maxmem: 64 * 1024 * 1024 };
-
-interface Secret { salt: string; hash: string; N: number; r: number; p: number }
-
-function derive(passphrase: string, salt: Buffer, s = SCRYPT): Buffer {
-  return crypto.scryptSync(passphrase, salt, s.keylen, { N: s.N, r: s.r, p: s.p, maxmem: s.maxmem });
-}
-
-export function hasPassphrase(): boolean {
-  return fs.existsSync(SECRET_FILE);
-}
-
-export function setPassphrase(newPass: string, oldPass?: string): void {
-  if (hasPassphrase() && !verifyPassphrase(oldPass ?? "")) throw new Error("The current passphrase is wrong.");
-  if (typeof newPass !== "string" || newPass.length < 10) throw new Error("Use a passphrase of at least 10 characters.");
-  const salt = crypto.randomBytes(16);
-  const secret: Secret = { salt: salt.toString("hex"), hash: derive(newPass, salt).toString("hex"), N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p };
-  writeJSONAtomic(SECRET_FILE, secret);
-  logEvent({ type: "passphrase-set" });
-}
-
-export function verifyPassphrase(pass: string): boolean {
-  const s = readJSON(SECRET_FILE) as Secret | null;
-  if (!s || typeof pass !== "string") return false;
-  const got = derive(pass, Buffer.from(s.salt, "hex"), { ...SCRYPT, N: s.N, r: s.r, p: s.p });
-  const want = Buffer.from(s.hash, "hex");
-  return got.length === want.length && crypto.timingSafeEqual(got, want);
-}
-
-function requirePass(pass: string): void {
-  if (!hasPassphrase()) throw new Error("No founder passphrase yet. Run: npm run warden -- init");
-  if (!verifyPassphrase(pass)) {
-    logEvent({ type: "founder-auth-failed" });
-    throw new Error("Wrong passphrase.");
-  }
-}
+export { hasPassphrase, setPassphrase, verifyPassphrase };
 
 /** Record the current code as known-good. Only do this for code you trust. */
 export function pin(pass: string): Baseline {
-  requirePass(pass);
+  requirePass(pass, "warden.pin");
   const lc = verifyLog(LOG_FILE, HEAD_FILE);
   const b: Baseline = { ...manifest(ROOT), pinnedAt: new Date().toISOString(), logHead: lc.lastHash };
   writeJSONAtomic(BASELINE_FILE, b);
@@ -61,31 +39,38 @@ export function pin(pass: string): Baseline {
   return b;
 }
 
+function requirePass(pass: string, operation: string) {
+  return requireFounder(pass, operation);
+}
+
 /** Quarantined → probation. Refused while any tripwire is still failing. */
 export function release(agent: string, pass: string): void {
-  requirePass(pass);
+  const proof = requirePass(pass, "agent.release");
   if (!AGENT_RE.test(agent)) throw new Error(`Not a valid agent name: ${agent}`);
   const r = check();
   if (!r.integrity.ok) throw new Error(`Code still differs from the pinned version (${r.integrity.detail}). Restore it first, for example with: git status, then git checkout -- <file> or git reset --hard origin/<branch>.`);
   if (!r.log.ok) throw new Error(`The event log is still damaged (${r.log.detail}). Review it with npm run warden -- log, then archive it with npm run warden -- reset-log.`);
   const a = getAgent(agent);
   if (a.status !== "quarantined") throw new Error(`${agent} is ${a.status}, not quarantined.`);
-  setAgent({ agent, status: "probation", since: new Date().toISOString(), reasons: [`released by founder after: ${a.reasons.join("; ")}`].slice(0, 1) });
+  restoreAgent({ agent, status: "probation", since: new Date().toISOString(), reasons: [`released by founder after: ${a.reasons.join("; ")}`].slice(0, 1) }, proof);
   logEvent({ type: "release", agent });
 }
 
 /** Probation → active. */
 export function trust(agent: string, pass: string): void {
-  requirePass(pass);
+  const proof = requirePass(pass, "agent.trust");
   const a = getAgent(agent);
   if (a.status !== "probation") throw new Error(`${agent} is ${a.status}; only an agent on probation can be trusted again.`);
-  setAgent({ agent, status: "active", since: new Date().toISOString(), reasons: [] });
+  restoreAgent({ agent, status: "active", since: new Date().toISOString(), reasons: [] }, proof);
   logEvent({ type: "trust", agent });
 }
 
-/** End Key Authority lockdown. Refused while any agent is still quarantined. */
+/**
+ * End Key Authority lockdown. This is the only way to end it. Refused while
+ * any agent is still quarantined.
+ */
 export function clearLockdown(pass: string): boolean {
-  requirePass(pass);
+  requirePass(pass, "lockdown.clear");
   const stuck = allAgents().filter((a) => a.status === "quarantined").map((a) => a.agent);
   if (stuck.length) throw new Error(`Release or keep these agents first; they are still quarantined: ${stuck.join(", ")}.`);
   if (!fs.existsSync(LOCKDOWN_FILE)) return false;
@@ -96,7 +81,7 @@ export function clearLockdown(pass: string): boolean {
 
 /** After reviewing a damaged log, archive it and start a fresh chain. */
 export function resetLog(pass: string): string {
-  requirePass(pass);
+  requirePass(pass, "log.reset");
   const dir = path.join(WARDEN_DIR, "archive", String(Date.now()));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const f of [LOG_FILE, HEAD_FILE, tamperFile(LOG_FILE)]) {
@@ -104,4 +89,64 @@ export function resetLog(pass: string): string {
   }
   logEvent({ type: "log-reset", archivedTo: dir });
   return dir;
+}
+
+// ---------- agent credentials ----------
+
+export interface IssuedCredential extends CredentialRecord { keyFile: string }
+
+/**
+ * Issue an agent its own Ed25519 credential. Any earlier credential for that
+ * agent is revoked. The private key goes to the agent's key file (0600, in a
+ * 0700 folder); Key Authority keeps only the public key's fingerprint.
+ * "founder" and other reserved names are refused.
+ */
+export function issueCredential(agent: string, pass: string, ttlDays: number = DEFAULT_TTL_DAYS): IssuedCredential {
+  requirePass(pass, "credential.issue");
+  if (!validAgentName(agent)) throw new Error(`Can't issue a credential for "${agent}": not an agent name, or reserved.`);
+  if (!Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 3650) throw new Error("Credential lifetime must be between 1 and 3650 days.");
+
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const der = publicKey.export({ type: "spki", format: "der" });
+  const now = Date.now();
+  const rec: CredentialRecord = {
+    agent,
+    fingerprint: fingerprintOf(der),
+    issuedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + ttlDays * 86_400_000).toISOString(),
+    revokedAt: null,
+  };
+
+  revokeAll(agent, "replaced by a new credential");
+  ensureDir(CRED_DIR);
+  ensureDir(KEYS_DIR);
+  fs.chmodSync(KEYS_DIR, 0o700);
+  const kf = keyFile(agent);
+  const tmp = `${kf}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600, flag: "wx" });
+  fs.renameSync(tmp, kf);
+  writeJSONAtomic(recordFile(rec.fingerprint), rec);
+  logEvent({ type: "credential-issued", agent, fingerprint: rec.fingerprint.slice(0, 16), expiresAt: rec.expiresAt });
+  return { ...rec, keyFile: kf };
+}
+
+function revokeAll(agent: string, why: string): number {
+  let n = 0;
+  const at = new Date().toISOString();
+  for (const r of listCredentials()) {
+    if (r.agent !== agent || r.revokedAt) continue;
+    writeJSONAtomic(recordFile(r.fingerprint), { ...r, revokedAt: at });
+    logEvent({ type: "credential-revoked", agent, fingerprint: r.fingerprint.slice(0, 16), why });
+    n++;
+  }
+  return n;
+}
+
+/** Revoke every active credential an agent has, and delete its key file. */
+export function revokeCredential(agent: string, pass: string): number {
+  requirePass(pass, "credential.revoke");
+  if (!AGENT_RE.test(agent)) throw new Error(`Not a valid agent name: ${agent}`);
+  const n = revokeAll(agent, "revoked by founder");
+  fs.rmSync(keyFile(agent), { force: true });
+  return n;
 }

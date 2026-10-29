@@ -3,6 +3,20 @@ import path from "path";
 import { coreGuard } from "./guards/coreGuard";
 import { digestOf } from "./authority/canonical";
 import { reportHostile } from "./authority/KeyAuthority";
+import { AgentSigner } from "./authority/credentials";
+import {
+  CleanupResult,
+  Journal,
+  appendHistory,
+  cleanup,
+  dropJournal,
+  filesIn,
+  markWritten,
+  readJournal,
+  recordCreated,
+  saveJournal,
+  startJournal,
+} from "./buildJournal";
 
 /**
  * ScaffoldEngine — writes a generated project under one authorized root.
@@ -13,7 +27,9 @@ import { reportHostile } from "./authority/KeyAuthority";
  *    caller's structure object is never read again after the copy.
  *  - Every build must pass coreGuard with action "fs.write" and the digest
  *    of its snapshot (plus the resolved output root), so a founder approval
- *    covers exactly that plan in exactly that place.
+ *    covers exactly that plan in exactly that place. The request is signed
+ *    with the engine's agent credential; Key Authority works out who is
+ *    asking from that signature, not from a name.
  *  - A plan with a traversal, absolute or otherwise unsafe path is reported
  *    to Key Authority as hostile, which puts NEXUS into lockdown.
  *  - A guard allow is not trusted on its own: writeProjectConfined still
@@ -23,6 +39,10 @@ import { reportHostile } from "./authority/KeyAuthority";
  *    use "/" separators, and may not contain "..", ".", empty segments,
  *    backslashes, or NUL bytes.
  *  - A project directory must not already exist, so nothing is overwritten.
+ *  - Every build keeps a journal of what it creates (see ./buildJournal). A
+ *    build that fails is undone, removing only its own files; a build that
+ *    was interrupted is undone before the next attempt. Unrelated files are
+ *    never removed, and every outcome is recorded.
  *  - Directories are created one segment at a time; an existing segment that
  *    is a symlink or not a directory stops the build.
  *  - Files are opened with O_CREAT | O_EXCL | O_NOFOLLOW, so an existing file
@@ -64,13 +84,6 @@ const HOSTILE_CODES = new Set(["INVALID_PATH", "INVALID_PROJECT_NAME", "UNSAFE_P
 export interface ScaffoldFile {
   path: string;
   content: string;
-}
-
-export interface ScaffoldResult {
-  project: string;
-  path: string;
-  filesCreated: number;
-  files: string[];
 }
 
 interface PlannedFile {
@@ -175,12 +188,13 @@ function isInside(root: string, candidate: string): boolean {
 }
 
 /** Create each directory segment, refusing symlinks and non-directories. Exported for tests. */
-export function ensureDirectories(projectRoot: string, dirSegments: string[]): string {
+export function ensureDirectories(projectRoot: string, dirSegments: string[], onCreate?: (rel: string) => void): string {
   let current = projectRoot;
   for (const seg of dirSegments) {
     current = path.join(current, seg);
     try {
       fs.mkdirSync(current, { mode: 0o755 });
+      onCreate?.(path.relative(projectRoot, current).split(path.sep).join("/"));
     } catch (err: any) {
       if (err?.code !== "EEXIST") throw err;
       const st = fs.lstatSync(current);
@@ -207,6 +221,50 @@ export function snapshotProject(projectName: unknown, structure: unknown): Proje
   return Object.freeze({ project, files: Object.freeze(files) });
 }
 
+export interface WriteOptions {
+  /** Digest of the approved plan, kept in the build journal. */
+  digest?: string;
+  /** Test hook: called before each file is written. Throwing makes that file fail. */
+  beforeFile?: (index: number, rel: string) => void;
+}
+
+export interface ScaffoldResult {
+  project: string;
+  path: string;
+  filesCreated: number;
+  files: string[];
+  /** Set when an earlier interrupted attempt was cleaned up first. */
+  recoveredFrom?: string;
+}
+
+function describeCleanup(c: CleanupResult): string {
+  const kept = c.kept.length ? `; kept ${c.kept.length}: ${c.kept.slice(0, 3).map((k) => `${k.rel} (${k.why})`).join(", ")}` : "";
+  return `removed ${c.removed.length} item(s) this build created${kept}`;
+}
+
+/**
+ * Before a new attempt, undo an earlier attempt that never finished. Returns
+ * the earlier attempt's id, or throws PROJECT_EXISTS when its leftovers can't
+ * all be safely removed.
+ */
+function recoverInterrupted(projectRoot: string, name: string): string | undefined {
+  const old = readJournal(projectRoot);
+  if (!old) return undefined;
+  const result = cleanup(old);
+  if (result.kept.length) {
+    old.status = "needs-attention";
+    saveJournal(old);
+    appendHistory({ at: new Date().toISOString(), attemptId: old.attemptId, project: name, projectRoot, outcome: "recovery-incomplete", filesWritten: filesIn(old), cleanup: result });
+    throw new ScaffoldError(
+      "PROJECT_EXISTS",
+      `An earlier build of ${name} did not finish, and its folder now holds things that build did not create, so nothing was removed or overwritten: ${describeCleanup(result)}.`
+    );
+  }
+  appendHistory({ at: new Date().toISOString(), attemptId: old.attemptId, project: name, projectRoot, outcome: "interrupted", filesWritten: filesIn(old), cleanup: result, error: "the build stopped before finishing (process interrupted)" });
+  dropJournal(projectRoot);
+  return old.attemptId;
+}
+
 /**
  * Write a snapshot under basePath with every confinement check applied.
  * This function does not authorize anything: callers must have a coreGuard
@@ -214,7 +272,7 @@ export function snapshotProject(projectName: unknown, structure: unknown): Proje
  * Module exports are not a security boundary against code already running
  * in this process; the guard governs the Genesis path, not hostile code.
  */
-export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): ScaffoldResult {
+export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, opts: WriteOptions = {}): ScaffoldResult {
   const name = snap.project;
   const plan = snap.files;
 
@@ -222,15 +280,14 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): S
   const root = fs.realpathSync(basePath);
   const projectRoot = path.join(root, name);
 
-  try {
-    fs.mkdirSync(projectRoot, { mode: 0o755 });
-  } catch (err: any) {
-    if (err?.code === "EEXIST") {
-      throw new ScaffoldError("PROJECT_EXISTS", `Project already exists: ${name}`);
-    }
-    throw err;
+  const recoveredFrom = recoverInterrupted(projectRoot, name);
+
+  // A project folder this build didn't make is never touched.
+  if (fs.existsSync(projectRoot) || isSymlink(projectRoot)) {
+    throw new ScaffoldError("PROJECT_EXISTS", `Project already exists: ${name}`);
   }
 
+  const journal: Journal = startJournal(name, projectRoot, opts.digest ?? null);
   const written: string[] = [];
   const flags =
     fs.constants.O_WRONLY |
@@ -239,12 +296,23 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): S
     (fs.constants.O_NOFOLLOW ?? 0);
 
   try {
-    for (const file of plan) {
-      const dir = ensureDirectories(projectRoot, file.segments.slice(0, -1));
+    try {
+      fs.mkdirSync(projectRoot, { mode: 0o755 });
+    } catch (err: any) {
+      if (err?.code === "EEXIST") {
+        throw new ScaffoldError("PROJECT_EXISTS", `Project already exists: ${name}`);
+      }
+      throw err;
+    }
+    recordCreated(journal, "root", "");
+
+    for (const [index, file] of plan.entries()) {
+      const dir = ensureDirectories(projectRoot, file.segments.slice(0, -1) as string[], (rel) => recordCreated(journal, "dir", rel));
       const target = path.join(dir, file.segments[file.segments.length - 1]);
       if (!isInside(projectRoot, target)) {
         throw new ScaffoldError("UNSAFE_PATH", `Resolved path leaves the project: ${file.rel}`);
       }
+      opts.beforeFile?.(index, file.rel);
 
       let fd: number;
       try {
@@ -257,6 +325,7 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): S
       }
 
       try {
+        recordCreated(journal, "file", file.rel, file.content);
         if (!fs.fstatSync(fd).isFile()) {
           throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: not a regular file.`);
         }
@@ -268,16 +337,37 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot): S
       } finally {
         fs.closeSync(fd);
       }
+      markWritten(journal, file.rel);
       written.push(file.rel);
     }
   } catch (err: any) {
-    if (err instanceof ScaffoldError) {
-      err.message += ` (${written.length} of ${plan.length} files were written before stopping)`;
+    // Undo this attempt: only what the journal proves this build created.
+    const created = journal.created.length > 0;
+    const result = created ? cleanup(journal) : { removed: [], kept: [] };
+    if (result.kept.length) {
+      journal.status = "needs-attention";
+      saveJournal(journal);
+    } else {
+      dropJournal(projectRoot);
+    }
+    appendHistory({
+      at: new Date().toISOString(), attemptId: journal.attemptId, project: name, projectRoot,
+      outcome: "failed", filesWritten: written.length, cleanup: result,
+      error: String(err?.code ?? err?.name ?? "error") + ": " + String(err?.message ?? err).slice(0, 300),
+    });
+    if (err instanceof Error) {
+      err.message += ` (${written.length} of ${plan.length} files were written before stopping; ${created ? describeCleanup(result) : "nothing had been created"})`;
     }
     throw err;
   }
 
-  return { project: name, path: projectRoot, filesCreated: written.length, files: written };
+  dropJournal(projectRoot);
+  appendHistory({ at: new Date().toISOString(), attemptId: journal.attemptId, project: name, projectRoot, outcome: "completed", filesWritten: written.length });
+  return { project: name, path: projectRoot, filesCreated: written.length, files: written, ...(recoveredFrom ? { recoveredFrom } : {}) };
+}
+
+function isSymlink(p: string): boolean {
+  try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; }
 }
 
 /** Human-readable description of a snapshot, shown to the founder. */
@@ -288,35 +378,46 @@ export function describeSnapshot(snap: ProjectSnapshot): string {
 
 export class ScaffoldEngine {
   readonly basePath: string;
+  readonly #signer: AgentSigner | null;
 
-  constructor(basePath: string = "output/projects") {
+  /**
+   * The signer is the agent's credential (authority/credentials:
+   * loadAgentSigner). Without one the engine can't ask for anything, so every
+   * build is refused.
+   */
+  constructor(basePath: string = "output/projects", signer: AgentSigner | null = null) {
     this.basePath = basePath;
+    this.#signer = signer;
     Object.freeze(this);
   }
 
   /**
-   * Genesis proposes a build; coreGuard asks Key Authority. Throws
-   * GUARD_DENIED when refused, or APPROVAL_REQUIRED (with requestId) when
-   * the founder must approve this exact plan first.
+   * The agent proposes a build; coreGuard asks Key Authority, which checks
+   * the signature. Throws GUARD_DENIED when refused, or APPROVAL_REQUIRED
+   * (with requestId) when the founder must approve this exact plan first.
    */
-  createProject(projectName: string, structure: unknown, actor: string = "genesis"): ScaffoldResult {
+  createProject(projectName: string, structure: unknown): ScaffoldResult {
     let snap: ProjectSnapshot;
     try {
       snap = snapshotProject(projectName, structure);
     } catch (err) {
-      this.reportIfHostile(err, actor, String(projectName));
+      this.reportIfHostile(err, `project:${String(projectName).slice(0, 128)}`);
       throw err;
+    }
+    const signer = this.#signer;
+    if (!signer) {
+      throw new ScaffoldError("GUARD_DENIED", `Build of ${snap.project} was not authorized: this engine has no agent credential.`);
     }
 
     const root = path.resolve(this.basePath);
     const target = `project:${snap.project}`;
-    const decision = coreGuard({
-      actor,
+    const digest = digestOf({ root, project: snap.project, files: snap.files.map((f) => ({ path: f.rel, content: f.content })) });
+    const decision = coreGuard(signer.sign({
       action: "fs.write",
       target,
-      digest: digestOf({ root, project: snap.project, files: snap.files.map((f) => ({ path: f.rel, content: f.content })) }),
+      digest,
       summary: `${describeSnapshot(snap)}\nInto: ${root}`,
-    });
+    }));
 
     if (decision.pending) {
       throw new ScaffoldError(
@@ -330,16 +431,21 @@ export class ScaffoldEngine {
     }
 
     try {
-      return writeProjectConfined(this.basePath, snap);
+      return writeProjectConfined(this.basePath, snap, { digest });
     } catch (err) {
-      this.reportIfHostile(err, actor, target);
+      this.reportIfHostile(err, target);
       throw err;
     }
   }
 
-  private reportIfHostile(err: unknown, actor: string, target: string): void {
-    if (err instanceof ScaffoldError && HOSTILE_CODES.has(err.code)) {
-      reportHostile({ actor, action: "fs.write", target, reason: `${err.code}: ${err.message}` });
-    }
+  /** A hostile plan is reported signed, so it can be pinned on this agent. */
+  private reportIfHostile(err: unknown, target: string): void {
+    if (!(err instanceof ScaffoldError) || !HOSTILE_CODES.has(err.code)) return;
+    const reason = `${err.code}: ${err.message}`;
+    let signed: unknown = null;
+    try {
+      signed = this.#signer?.sign({ action: "fs.write", target, digest: digestOf({ rejected: target, code: err.code }) }) ?? null;
+    } catch { /* report unsigned */ }
+    reportHostile(signed, reason);
   }
 }

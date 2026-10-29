@@ -14,10 +14,20 @@ import {
   readJSON,
   writeJSONAtomic,
 } from "./store";
+import { requireFounder } from "../warden/passphrase";
+import { logEvent } from "../warden/state";
 
 /**
- * Founder-only operations. Only the founder CLI (./cli.ts) imports this
- * module; a test enforces that nothing else in src/ does.
+ * Founder-only Key Authority operations. Only the founder CLI (./cli.ts)
+ * imports this module; a test enforces that.
+ *
+ * Approving and rejecting check the Founder passphrase themselves, so a
+ * direct call without it fails exactly like the CLI does, and changes
+ * nothing. Reading pending requests and lockdown status needs no passphrase.
+ *
+ * Lockdown is not cleared here. The only way to end it is the Warden's
+ * clearLockdown (warden/founder), which needs the passphrase and refuses
+ * while any agent is quarantined.
  */
 
 export function listPending(): PendingRequest[] {
@@ -38,8 +48,9 @@ export function getPending(id: string): PendingRequest {
 }
 
 /** Approve one pending request: a single-use approval for its exact plan digest. */
-export function approve(id: string, ttlMs: number = APPROVAL_TTL_MS): Approval {
+export function approve(id: string, passphrase: string, ttlMs: number = APPROVAL_TTL_MS): Approval {
   const p = getPending(id);
+  requireFounder(passphrase, "request.approve");
   const approval: Approval = {
     id: p.id,
     actor: p.actor,
@@ -51,21 +62,18 @@ export function approve(id: string, ttlMs: number = APPROVAL_TTL_MS): Approval {
   };
   writeJSONAtomic(digestFile(DIRS.approvals, p.digest), approval);
   fs.rmSync(pendingFile(id), { force: true });
+  logEvent({ type: "request-approved", id: p.id, actor: p.actor, action: p.action, target: p.target });
   return approval;
 }
 
-export function reject(id: string): PendingRequest {
+export function reject(id: string, passphrase: string): PendingRequest {
   const p = getPending(id);
+  requireFounder(passphrase, "request.reject");
   fs.rmSync(pendingFile(id), { force: true });
+  logEvent({ type: "request-rejected", id: p.id, actor: p.actor, action: p.action, target: p.target });
   return p;
 }
 
 export function lockdownStatus(): LockdownRecord | null {
   return readJSON(LOCKDOWN_FILE) as LockdownRecord | null;
-}
-
-export function clearLockdown(): boolean {
-  if (!fs.existsSync(LOCKDOWN_FILE)) return false;
-  fs.rmSync(LOCKDOWN_FILE, { force: true });
-  return true;
 }

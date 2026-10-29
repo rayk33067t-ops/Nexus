@@ -3,8 +3,8 @@
  *
  *   npm run authority -- pending           list requests waiting for approval
  *   npm run authority -- show <id>         show one request in full
- *   npm run authority -- approve <id>      approve it once, for 15 minutes
- *   npm run authority -- reject <id>       discard it
+ *   npm run authority -- approve <id>      approve it once, for 15 minutes (asks for your passphrase)
+ *   npm run authority -- reject <id>       discard it (asks for your passphrase)
  *   npm run authority -- rules             check the rules file and list rules
  *   npm run authority -- lockdown          show lockdown status and incidents
  *   (end lockdown with: npm run warden -- lockdown:clear)
@@ -13,6 +13,7 @@
 import { PATHS } from "./store";
 import { loadRules } from "./KeyAuthority";
 import { approve, getPending, listPending, lockdownStatus, reject } from "./founder";
+import { ask, closeReader } from "../cliPrompt";
 
 function show(p: { id: string; actor: string; action: string; target: string; digest: string; summary: string; reasons: string[]; requestedAt: string }) {
   console.log(`Request ${p.id}  (${p.requestedAt})`);
@@ -22,7 +23,7 @@ function show(p: { id: string; actor: string; action: string; target: string; di
   if (p.summary) console.log(p.summary.split("\n").map((l) => "  " + l).join("\n"));
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const [cmd, arg] = argv;
   switch (cmd) {
     case "pending": {
@@ -36,13 +37,15 @@ function main(argv: string[]): number {
       show(getPending(arg ?? ""));
       return 0;
     case "approve": {
-      const a = approve(arg ?? "");
+      getPending(arg ?? ""); // say "no such request" before asking for the passphrase
+      const a = approve(arg ?? "", await ask("Founder passphrase: "));
       console.log(`Approved ${a.id}: ${a.actor} may ${a.action} on ${a.target} once, until ${new Date(a.expiresAt).toLocaleTimeString()}.`);
       console.log("Only this exact plan is covered. Run the build again to use the approval.");
       return 0;
     }
     case "reject": {
-      const p = reject(arg ?? "");
+      getPending(arg ?? "");
+      const p = reject(arg ?? "", await ask("Founder passphrase: "));
       console.log(`Rejected ${p.id}: ${p.actor} ${p.action} on ${p.target}.`);
       return 0;
     }
@@ -72,9 +75,7 @@ function main(argv: string[]): number {
   }
 }
 
-try {
-  process.exitCode = main(process.argv.slice(2));
-} catch (err: any) {
-  console.error(err?.message ?? String(err));
-  process.exitCode = 1;
-}
+main(process.argv.slice(2)).then(
+  (code) => { closeReader(); process.exitCode = code; },
+  (err) => { closeReader(); console.error(err?.message ?? String(err)); process.exitCode = 1; }
+);

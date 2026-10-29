@@ -16,6 +16,8 @@ const founder = require("../src/genesis/authority/founder");
 const { digestOf } = require("../src/genesis/authority/canonical");
 const { coreGuard } = require("../src/genesis/guards/coreGuard");
 const { ScaffoldEngine, ScaffoldError } = require("../src/genesis/scaffold");
+const W = require("../src/genesis/warden/founder");
+const { issue, PASS } = require("./support");
 
 const D1 = digestOf({ plan: 1 });
 const D2 = digestOf({ plan: 2 });
@@ -24,11 +26,16 @@ function rules(list: object[] | string) {
   fs.writeFileSync(RULES, typeof list === "string" ? list : JSON.stringify({ version: 1, rules: list }));
 }
 const rule = (id: string, actor: string, action: string, target: string, effect: string) => ({ id, actor, action, target, effect });
-const req = (over: object = {}) => ({ actor: "genesis", action: "fs.write", target: "project:demo", digest: D1, summary: "demo", ...over });
+
+// Every request is signed by an agent's own credential; nobody names an actor.
+let genesis: any;
+const body = (over: object = {}) => ({ action: "fs.write", target: "project:demo", digest: D1, summary: "demo", ...over });
+const req = (over: object = {}, signer: any = genesis) => signer.sign(body(over));
 
 beforeEach(() => {
   fs.rmSync(STATE, { recursive: true, force: true });
   fs.rmSync(RULES, { force: true });
+  genesis = issue("genesis");
 });
 
 // ---------- rules ----------
@@ -79,7 +86,7 @@ test("requests without a valid digest or with an unknown action are denied", () 
   rules([rule("y", "*", "*", "**", "allow")]);
   assert.equal(KA.decide(req({ digest: "abc" })).outcome, "deny");
   assert.equal(KA.decide(req({ action: "fs.delete" })).outcome, "deny");
-  assert.equal(coreGuard({ actor: "genesis", action: "fs.write", target: "project:demo" }).allowed, false);
+  assert.equal(coreGuard(genesis.sign({ action: "fs.write", target: "project:demo", digest: "" })).allowed, false);
 });
 
 // ---------- founder approval ----------
@@ -92,53 +99,57 @@ test("ask records one pending request and reuses it for the same plan", () => {
   assert.equal(a.requestId, b.requestId);
   assert.equal(founder.listPending().length, 1);
   assert.equal(founder.listPending()[0].summary, "demo");
+  assert.equal(founder.listPending()[0].actor, "genesis");
 });
 
 test("an approval allows exactly once", () => {
   rules([rule("q", "genesis", "fs.write", "**", "ask")]);
   const id = KA.decide(req()).requestId;
-  founder.approve(id);
+  founder.approve(id, PASS);
   assert.equal(founder.listPending().length, 0);
   assert.equal(KA.decide(req()).outcome, "allow");
   assert.equal(KA.decide(req()).outcome, "ask");
 });
 
 test("an approval covers only that exact actor, action, target and plan", () => {
+  const builder = issue("builder");
   rules([rule("q", "*", "*", "**", "ask")]);
-  founder.approve(KA.decide(req()).requestId);
+  founder.approve(KA.decide(req()).requestId, PASS);
   assert.equal(KA.decide(req({ digest: D2 })).outcome, "ask");
   assert.equal(KA.decide(req({ target: "project:other" })).outcome, "ask");
-  assert.equal(KA.decide(req({ actor: "savannah" })).outcome, "ask");
+  assert.equal(KA.decide(req({}, builder)).outcome, "ask");
   assert.equal(KA.decide(req()).outcome, "allow");
 });
 
 test("an expired approval does not allow", () => {
   rules([rule("q", "genesis", "fs.write", "**", "ask")]);
-  founder.approve(KA.decide(req()).requestId, -1);
+  founder.approve(KA.decide(req()).requestId, PASS, -1);
   assert.equal(KA.decide(req()).outcome, "ask");
 });
 
 test("a deny rule wins even over an approval", () => {
   rules([rule("q", "genesis", "fs.write", "**", "ask")]);
-  founder.approve(KA.decide(req()).requestId);
+  founder.approve(KA.decide(req()).requestId, PASS);
   rules([rule("n", "genesis", "fs.write", "**", "deny")]);
   assert.equal(KA.decide(req()).outcome, "deny");
 });
 
 test("rejecting a request removes it; bad ids are refused", () => {
   rules([rule("q", "genesis", "fs.write", "**", "ask")]);
-  founder.reject(KA.decide(req()).requestId);
+  founder.reject(KA.decide(req()).requestId, PASS);
   assert.equal(founder.listPending().length, 0);
-  assert.throws(() => founder.approve("../../etc"));
-  assert.throws(() => founder.approve("deadbeef"));
+  assert.throws(() => founder.approve("../../etc", PASS));
+  assert.throws(() => founder.approve("deadbeef", PASS));
 });
 
 // ---------- Savannah and lockdown ----------
 
 test("Savannah's challenge turns allow into ask for that plan only, and cannot approve", () => {
+  const savannah = issue("savannah");
   rules([rule("ok", "genesis", "fs.write", "**", "allow")]);
-  assert.equal(KA.challenge({ actor: "genesis", digest: D1, reason: "x" }), false);
-  assert.equal(KA.challenge({ actor: "savannah", digest: D1, reason: "writes outside the plan" }), true);
+  const challengeOf = (signer: any, digest: string) => signer.sign({ action: "plan.challenge", target: "plan", digest });
+  assert.equal(KA.challenge(challengeOf(genesis, D1), "x"), false);
+  assert.equal(KA.challenge(challengeOf(savannah, D1), "writes outside the plan"), true);
   assert.equal(KA.decide(req()).outcome, "ask");
   assert.equal(KA.decide(req({ digest: D2 })).outcome, "allow");
   rules([rule("n", "genesis", "fs.write", "**", "deny")]);
@@ -147,21 +158,24 @@ test("Savannah's challenge turns allow into ask for that plan only, and cannot a
 
 test("a hostile report puts NEXUS in lockdown until the founder clears it", () => {
   rules([rule("ok", "genesis", "fs.write", "**", "allow")]);
-  KA.reportHostile({ actor: "intruder", action: "fs.write", target: "project:x", reason: "traversal" });
+  const intruder = issue("intruder");
+  KA.reportHostile(intruder.sign({ action: "fs.write", target: "project:x", digest: D2 }), "traversal");
   assert.equal(KA.isLockedDown(), true);
   const d = KA.decide(req());
   assert.equal(d.outcome, "ask");
   assert.match(d.reason, /lockdown/);
   // one incident from Key Authority, one from the Warden quarantining the sender
   assert.equal(founder.lockdownStatus().incidents.length, 2);
-  founder.clearLockdown();
+  assert.throws(() => W.clearLockdown(PASS), /still quarantined: intruder/);
+  W.release("intruder", PASS);
+  W.clearLockdown(PASS);
   assert.equal(KA.decide(req()).outcome, "allow");
 });
 
 // ---------- end to end through ScaffoldEngine ----------
 
-function engine() {
-  return new ScaffoldEngine(path.join(ROOT, "out-" + Math.random().toString(16).slice(2)));
+function engine(signer: any = genesis) {
+  return new ScaffoldEngine(path.join(ROOT, "out-" + Math.random().toString(16).slice(2)), signer);
 }
 const files = (content = "hello") => ({ files: [{ path: "README.md", content }] });
 function code(fn: () => unknown): { code: string; requestId?: string } {
@@ -185,7 +199,7 @@ test("an ask rule blocks the build until the founder approves that exact plan", 
   assert.equal(fs.existsSync(path.join(e.basePath, "demo")), false);
   assert.match(founder.getPending(first.requestId).summary, /README\.md \(5 bytes\)/);
 
-  founder.approve(first.requestId);
+  founder.approve(first.requestId, PASS);
   // a changed plan is not covered by the approval
   assert.equal(code(() => e.createProject("demo", files("changed"))).code, "APPROVAL_REQUIRED");
   // the approved plan goes through
@@ -195,23 +209,32 @@ test("an ask rule blocks the build until the founder approves that exact plan", 
 test("the same plan into a different output root needs its own approval", () => {
   rules([rule("q", "genesis", "fs.write", "project:*", "ask")]);
   const a = engine(), b = engine();
-  founder.approve(code(() => a.createProject("demo", files())).requestId);
+  founder.approve(code(() => a.createProject("demo", files())).requestId, PASS);
   assert.equal(code(() => b.createProject("demo", files())).code, "APPROVAL_REQUIRED");
 });
 
 test("a traversal attempt locks NEXUS down and the Warden quarantines the agent that tried it", () => {
   rules([rule("ok", "*", "fs.write", "project:*", "allow")]);
+  const builder = issue("builder");
   const e = engine();
   assert.equal(code(() => e.createProject("evil", { files: [{ path: "../../escape.txt", content: "x" }] })).code, "INVALID_PATH");
   assert.equal(KA.isLockedDown(), true);
   assert.equal(code(() => e.createProject("demo", files())).code, "GUARD_DENIED");
   // another agent is not quarantined, but lockdown means it now needs approval
-  assert.equal(code(() => e.createProject("demo", files(), "builder")).code, "APPROVAL_REQUIRED");
+  assert.equal(code(() => engine(builder).createProject("demo", files())).code, "APPROVAL_REQUIRED");
 });
 
 test("Savannah cannot build even with a permissive allow rule if a deny rule names her", () => {
+  const savannah = issue("savannah");
   rules([rule("all", "*", "fs.write", "**", "allow"), rule("s", "savannah", "*", "**", "deny")]);
-  assert.equal(code(() => engine().createProject("demo", files(), "savannah")).code, "GUARD_DENIED");
+  assert.equal(code(() => engine(savannah).createProject("demo", files())).code, "GUARD_DENIED");
+});
+
+test("an engine without a credential can't build anything", () => {
+  rules([rule("all", "*", "fs.write", "**", "allow")]);
+  const e = new ScaffoldEngine(path.join(ROOT, "out-nocred"));
+  assert.equal(code(() => e.createProject("demo", files())).code, "GUARD_DENIED");
+  assert.equal(fs.existsSync(path.join(ROOT, "out-nocred", "demo")), false);
 });
 
 // ---------- structure ----------
