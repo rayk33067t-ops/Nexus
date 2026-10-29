@@ -17,6 +17,7 @@ import {
   saveJournal,
   startJournal,
 } from "./buildJournal";
+import { DIR_FLAGS, LinkInPath, anchoredAvailable, at, openChildDir } from "./safeFs";
 
 /**
  * ScaffoldEngine — writes a generated project under one authorized root.
@@ -51,11 +52,17 @@ import {
  *    real path is checked against the project root before any content is
  *    written.
  *
- * Known limit: Node has no openat(), so an attacker with write access inside
- * the output root could still swap a directory for a symlink between the
- * directory check and the open. The /proc check then refuses to write
- * content, but the empty file it created outside the root remains. Keep the
- * output root writable only by NEXUS.
+ *  - Where /proc/self/fd works (Linux, Android/Termux), every folder is opened
+ *    one level at a time with O_NOFOLLOW and every folder and file is created
+ *    inside a folder held open (see ./safeFs). A folder swapped for a link
+ *    mid-build can't redirect a write, so nothing is ever created outside the
+ *    project.
+ *
+ * Known limit: where /proc isn't available, Node has no openat(), so code with
+ * write access inside the output root could swap a directory for a symlink
+ * between the directory check and the open. The descriptor check then refuses
+ * to write content, but the empty file it created outside the root remains.
+ * Keep the output root writable only by NEXUS.
  */
 
 export const LIMITS = Object.freeze({
@@ -289,6 +296,7 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, op
 
   const journal: Journal = startJournal(name, projectRoot, opts.digest ?? null);
   const written: string[] = [];
+  let rootFd = -1;
   const flags =
     fs.constants.O_WRONLY |
     fs.constants.O_CREAT |
@@ -304,43 +312,74 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, op
       }
       throw err;
     }
-    recordCreated(journal, "root", "");
+    const anchored = anchoredAvailable();
+    rootFd = anchored ? fs.openSync(projectRoot, DIR_FLAGS) : -1;
+    recordCreated(journal, "root", "", undefined, rootFd >= 0 ? fs.fstatSync(rootFd) : undefined);
 
     for (const [index, file] of plan.entries()) {
-      const dir = ensureDirectories(projectRoot, file.segments.slice(0, -1) as string[], (rel) => recordCreated(journal, "dir", rel));
-      const target = path.join(dir, file.segments[file.segments.length - 1]);
-      if (!isInside(projectRoot, target)) {
-        throw new ScaffoldError("UNSAFE_PATH", `Resolved path leaves the project: ${file.rel}`);
-      }
-      opts.beforeFile?.(index, file.rel);
-
-      let fd: number;
+      const dirSegs = file.segments.slice(0, -1) as string[];
+      const leaf = file.segments[file.segments.length - 1];
+      const openDirs: number[] = [];
       try {
-        fd = fs.openSync(target, flags, 0o644);
-      } catch (err: any) {
-        if (err?.code === "EEXIST" || err?.code === "ELOOP") {
-          throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: target already exists or is a symlink.`);
+        // Reach (and make) the file's folder without following any link.
+        let target: string;
+        if (rootFd >= 0) {
+          let cur = rootFd, rel = "";
+          for (const seg of dirSegs) {
+            rel = rel ? `${rel}/${seg}` : seg;
+            let child;
+            try {
+              child = openChildDir(cur, seg, true);
+            } catch (err) {
+              if (err instanceof LinkInPath) throw new ScaffoldError("UNSAFE_PATH", `Refusing to build through ${rel}: not a real directory.`);
+              throw err;
+            }
+            openDirs.push(child.fd);
+            if (child.created) recordCreated(journal, "dir", rel, undefined, fs.fstatSync(child.fd));
+            cur = child.fd;
+          }
+          target = at(cur, leaf);
+        } else {
+          const dir = ensureDirectories(projectRoot, dirSegs, (rel) => recordCreated(journal, "dir", rel));
+          target = path.join(dir, leaf);
+          if (!isInside(projectRoot, target)) {
+            throw new ScaffoldError("UNSAFE_PATH", `Resolved path leaves the project: ${file.rel}`);
+          }
         }
-        throw err;
-      }
+        opts.beforeFile?.(index, file.rel);
 
-      try {
-        recordCreated(journal, "file", file.rel, file.content);
-        if (!fs.fstatSync(fd).isFile()) {
-          throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: not a regular file.`);
+        let fd: number;
+        try {
+          fd = fs.openSync(target, flags, 0o644);
+        } catch (err: any) {
+          if (err?.code === "EEXIST" || err?.code === "ELOOP") {
+            throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: target already exists or is a symlink.`);
+          }
+          throw err;
         }
-        const real = descriptorPath(fd);
-        if (real !== null && !isInside(projectRoot, real)) {
-          throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: opened file is outside the project (${real}).`);
+
+        try {
+          const st = fs.fstatSync(fd);
+          recordCreated(journal, "file", file.rel, file.content, st);
+          if (!st.isFile()) {
+            throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: not a regular file.`);
+          }
+          const real = descriptorPath(fd);
+          if (real !== null && !isInside(projectRoot, real)) {
+            throw new ScaffoldError("UNSAFE_PATH", `Refusing to write ${file.rel}: opened file is outside the project (${real}).`);
+          }
+          fs.writeSync(fd, file.content, null, "utf-8");
+        } finally {
+          fs.closeSync(fd);
         }
-        fs.writeSync(fd, file.content, null, "utf-8");
       } finally {
-        fs.closeSync(fd);
+        openDirs.forEach((d) => fs.closeSync(d));
       }
       markWritten(journal, file.rel);
       written.push(file.rel);
     }
   } catch (err: any) {
+    if (rootFd >= 0) { fs.closeSync(rootFd); rootFd = -1; }
     // Undo this attempt: only what the journal proves this build created.
     const created = journal.created.length > 0;
     const result = created ? cleanup(journal) : { removed: [], kept: [] };
@@ -361,6 +400,7 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, op
     throw err;
   }
 
+  if (rootFd >= 0) fs.closeSync(rootFd);
   dropJournal(projectRoot);
   appendHistory({ at: new Date().toISOString(), attemptId: journal.attemptId, project: name, projectRoot, outcome: "completed", filesWritten: written.length });
   return { project: name, path: projectRoot, filesCreated: written.length, files: written, ...(recoveredFrom ? { recoveredFrom } : {}) };

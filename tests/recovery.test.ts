@@ -184,3 +184,79 @@ test("every build outcome reaches the Warden's event log", () => {
   assert.equal(builds[0].filesWritten, 1);
   assert.equal(builds[1].filesWritten, 3);
 });
+
+// ---------- content matching is one check among several, not a substitute ----------
+
+test("folder-anchored operations are in use on this system (Linux and Android)", () => {
+  const { anchoredAvailable } = require("../src/genesis/safeFs");
+  if (process.platform === "linux" || process.platform === "android") assert.equal(anchoredAvailable(), true);
+});
+
+test("a tampered journal can't point cleanup outside the project", () => {
+  const { base, outside } = sandbox();
+  fs.writeFileSync(path.join(outside, "x.txt"), "keep");
+  const projectRoot = path.join(fs.realpathSync(base), "demo");
+  fs.mkdirSync(projectRoot);
+  const st = fs.statSync(path.join(outside, "x.txt"));
+  const j = {
+    v: 1, attemptId: "tampered", project: "demo", projectRoot, digest: null, startedAt: "", status: "in-progress",
+    created: ["../outside/x.txt", "../../" + path.basename(path.dirname(base)) + "/outside/x.txt", path.join(outside, "x.txt"), "a/../../outside/x.txt", "a\\..\\x.txt", "./x.txt"]
+      .map((rel) => ({ kind: "file", rel, dev: st.dev, ino: st.ino, sha256: journal.sha256("keep"), written: true })),
+  };
+  const r = journal.cleanup(j);
+  assert.deepEqual(r.removed, []);
+  assert.equal(r.kept.length, 6);
+  assert.ok(r.kept.every((k: any) => /not a plain path/.test(k.why)), JSON.stringify(r.kept));
+  assert.equal(fs.readFileSync(path.join(outside, "x.txt"), "utf-8"), "keep");
+});
+
+test("cleanup never goes through a folder replaced by a link, even to an identical file", () => {
+  const { base, outside } = sandbox();
+  crashMidBuild(base, 2);
+  const projectRoot = path.join(base, "demo");
+  // a decoy outside with exactly the content the build wrote, at the same name
+  fs.writeFileSync(path.join(outside, "app.ts"), "export const app = 1;\n");
+  fs.mkdirSync(path.join(outside, "lib"));
+  // replace the build's own "src" folder with a link to the decoy
+  fs.renameSync(path.join(projectRoot, "src"), path.join(base, "..", "moved-src"));
+  fs.symlinkSync(outside, path.join(projectRoot, "src"));
+
+  let err: any;
+  try { writeProjectConfined(base, snap()); } catch (e) { err = e; }
+  assert.ok(err && err.code === "PROJECT_EXISTS", String(err));
+  assert.equal(fs.readFileSync(path.join(outside, "app.ts"), "utf-8"), "export const app = 1;\n", "the decoy outside was deleted");
+  assert.ok(fs.existsSync(path.join(outside, "lib")));
+  const h = journal.readHistory("demo").filter((x: any) => x.projectRoot === fs.realpathSync(projectRoot)).at(-1);
+  assert.equal(h.outcome, "recovery-incomplete");
+  assert.ok(h.cleanup.kept.some((k: any) => /replaced by a link/.test(k.why)), JSON.stringify(h.cleanup.kept));
+});
+
+test("if the project folder itself is replaced by a link, cleanup removes nothing", () => {
+  const { base, outside } = sandbox();
+  crashMidBuild(base, 2);
+  const projectRoot = path.join(base, "demo");
+  fs.writeFileSync(path.join(outside, "README.md"), "# Demo\n"); // identical content, outside
+  fs.renameSync(projectRoot, path.join(base, "..", "moved-demo"));
+  fs.symlinkSync(outside, projectRoot);
+
+  assert.throws(() => writeProjectConfined(base, snap()), (e: any) => e.code === "PROJECT_EXISTS");
+  assert.equal(fs.readFileSync(path.join(outside, "README.md"), "utf-8"), "# Demo\n");
+  assert.ok(fs.lstatSync(projectRoot).isSymbolicLink(), "the link itself was left for the owner to inspect");
+  const h = journal.readHistory("demo").filter((x: any) => x.projectRoot === path.join(fs.realpathSync(base), "demo")).at(-1);
+  assert.equal(h.outcome, "recovery-incomplete");
+  assert.deepEqual(h.cleanup.removed, []);
+  assert.ok(h.cleanup.kept.every((k: any) => /no longer a real folder/.test(k.why)), JSON.stringify(h.cleanup.kept));
+});
+
+test("the ownership check itself refuses a link, even one pointing at the right file", () => {
+  // Covers the instant between the link check and the open: the open itself won't follow a link.
+  const { outside } = sandbox();
+  const real = path.join(outside, "app.ts");
+  fs.writeFileSync(real, "export const app = 1;\n");
+  const st = fs.statSync(real);
+  const entry = { kind: "file", rel: "src/app.ts", dev: st.dev, ino: st.ino, sha256: journal.sha256("export const app = 1;\n"), written: true };
+  assert.equal(journal.fileIsOurs(real, entry), null, "the real file is recognised");
+  const link = path.join(outside, "link-to-app.ts");
+  fs.symlinkSync(real, link);
+  assert.equal(journal.fileIsOurs(link, entry), "it is now a link");
+});
