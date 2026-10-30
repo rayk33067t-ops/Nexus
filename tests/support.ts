@@ -18,3 +18,21 @@ export function issue(agent: string, days?: number) {
   wardenFounder().issueCredential(agent, PASS, days);
   return credentials().loadAgentSigner(agent);
 }
+
+/**
+ * Get a real one-time grant for a build, the same way ScaffoldEngine does:
+ * a signed request through coreGuard. The rules file in force must allow it.
+ */
+export function grantFor(signer: any, basePath: string, snap: any) {
+  const { coreGuard } = require("../src/genesis/guards/coreGuard");
+  const { planDigest } = require("../src/genesis/scaffold");
+  const body = { action: "fs.write", target: `project:${snap.project}`, digest: planDigest(basePath, snap) };
+  let d = coreGuard(signer.sign(body));
+  if (d.pending) {
+    // e.g. NEXUS is in lockdown: the Founder approves this exact plan, as they would by hand
+    require("../src/genesis/authority/founder").approve(d.requestId, PASS);
+    d = coreGuard(signer.sign(body));
+  }
+  if (!d.allowed || !d.grant) throw new Error(`test setup: the guard refused the build: ${d.reason}`);
+  return d.grant;
+}

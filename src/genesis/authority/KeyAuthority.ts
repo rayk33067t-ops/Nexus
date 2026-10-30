@@ -14,10 +14,13 @@ import {
   ensureDir,
   listJSON,
   newId,
+  approvalFile,
   readJSON,
   writeJSONAtomic,
 } from "./store";
-import { getAgent, logEvent, recordSignal } from "../warden/state";
+
+const VOIDED = path.join(PATHS.stateDir, "voided");
+import { enterLockdown, getAgent, lockdownActive, logEvent, recordSignal } from "../warden/state";
 import { authenticate } from "./credentials";
 
 /**
@@ -162,12 +165,27 @@ export function parseRules(raw: unknown): RulesResult {
   return { ok: true, rules: Object.freeze(rules), reason: "" };
 }
 
+/**
+ * Read the rules file through one no-follow open: a rules file that is a link
+ * (to anywhere) is refused, so the rules in force are always the file at the
+ * pinned path, which the Warden fingerprints.
+ */
 export function loadRules(file: string = PATHS.rulesPath): RulesResult {
   let text: string;
+  let fd: number;
   try {
-    text = fs.readFileSync(file, "utf-8");
-  } catch {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  } catch (err: any) {
+    if (err?.code === "ELOOP") return bad("rules file is a link; refused");
     return bad(`no rules file at ${file}`);
+  }
+  try {
+    if (!fs.fstatSync(fd).isFile()) return bad("rules file is not a regular file");
+    text = fs.readFileSync(fd, "utf-8");
+  } catch {
+    return bad("rules file could not be read");
+  } finally {
+    fs.closeSync(fd);
   }
   let raw: unknown;
   try {
@@ -211,7 +229,7 @@ export function evaluateRules(rules: readonly Rule[], req: { actor: string; acti
 // ---------- state ----------
 
 export function isLockedDown(): boolean {
-  return fs.existsSync(LOCKDOWN_FILE);
+  return lockdownActive().locked;
 }
 
 export function isChallenged(digest: string): boolean {
@@ -222,24 +240,32 @@ function sameRequest(a: { actor: string; action: string; target: string; digest:
   return a.actor === b.actor && a.action === b.action && a.target === b.target && a.digest === b.digest;
 }
 
-/** Use a matching founder approval once. Returns true only if it was valid and is now consumed. */
+/**
+ * Use a matching founder approval once. The approval is claimed first (an
+ * atomic rename to a name only this call knows), and only then is the claimed
+ * file read and checked. So the approval that's checked is exactly the one
+ * that was claimed, and two callers can never both use it: the second rename
+ * finds nothing.
+ */
 function consumeApproval(req: AuthorityRequest): boolean {
-  const file = digestFile(DIRS.approvals, req.digest);
-  const a = readJSON(file) as Approval | null;
-  if (!a) return false;
-  if (!sameRequest(a, req)) return false;
-
+  const file = approvalFile(req);
+  ensureDir(DIRS.used);
   const stamp = Date.now();
-  if (typeof a.expiresAt !== "number" || a.expiresAt <= stamp) {
-    ensureDir(DIRS.expired);
-    try { fs.renameSync(file, path.join(DIRS.expired, `${path.basename(file, ".json")}-${stamp}.json`)); } catch { /* already gone */ }
+  const claimed = path.join(DIRS.used, `${path.basename(file, ".json")}-${stamp}-${newId()}.json`);
+  try {
+    fs.renameSync(file, claimed);
+  } catch {
+    return false; // no approval, or someone else claimed it first
+  }
+  const a = readJSON(claimed) as Approval | null;
+  if (!a || !sameRequest(a, req)) {
+    ensureDir(VOIDED);
+    try { fs.renameSync(claimed, path.join(VOIDED, path.basename(claimed))); } catch { /* gone */ }
     return false;
   }
-  // rename is atomic: if two callers race, only one succeeds
-  ensureDir(DIRS.used);
-  try {
-    fs.renameSync(file, path.join(DIRS.used, `${path.basename(file, ".json")}-${stamp}.json`));
-  } catch {
+  if (typeof a.expiresAt !== "number" || a.expiresAt <= stamp) {
+    ensureDir(DIRS.expired);
+    try { fs.renameSync(claimed, path.join(DIRS.expired, path.basename(claimed))); } catch { /* gone */ }
     return false;
   }
   return true;
@@ -357,20 +383,13 @@ export function reportHostile(input: unknown, reason: string): void {
   const r = copySigned(input);
   const who = r ? whoSigned(r, "hostile-report") : { reason: "no signed request" };
   const agent = "agent" in who ? who.agent : null;
-  const prev = (readJSON(LOCKDOWN_FILE) as LockdownRecord | null) ?? null;
-  const now = new Date().toISOString();
   const incident = {
-    at: now,
     actor: agent ?? "(unauthenticated)",
     action: short(r?.action, 256) ?? "",
     target: short(r?.target, 1024) ?? "",
     reason: String(reason ?? "").slice(0, 2000),
   };
-  const record: LockdownRecord = {
-    since: prev?.since ?? now,
-    incidents: [...(prev?.incidents ?? []), incident].slice(-100),
-  };
-  writeJSONAtomic(LOCKDOWN_FILE, record);
+  enterLockdown(incident);
   if (agent) recordSignal(agent, "hostile", `${incident.action} on ${incident.target}: ${incident.reason}`);
   else logEvent({ type: "hostile-unattributed", action: incident.action, target: incident.target, reason: incident.reason.slice(0, 500) });
 }

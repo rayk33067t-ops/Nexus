@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { coreGuard } from "./guards/coreGuard";
+import { coreGuard, consumeGrant } from "./guards/coreGuard";
 import { digestOf } from "./authority/canonical";
 import { reportHostile } from "./authority/KeyAuthority";
 import { AgentSigner } from "./authority/credentials";
@@ -33,6 +33,9 @@ import { DIR_FLAGS, LinkInPath, anchoredAvailable, at, openChildDir } from "./sa
  *    asking from that signature, not from a name.
  *  - A plan with a traversal, absolute or otherwise unsafe path is reported
  *    to Key Authority as hostile, which puts NEXUS into lockdown.
+ *  - The writer itself refuses to write without a one-time grant from
+ *    coreGuard for exactly this plan in exactly this place, so calling it
+ *    directly, skipping the guard, writes nothing.
  *  - A guard allow is not trusted on its own: writeProjectConfined still
  *    performs every filesystem check below at the moment of use.
  *  - The whole structure is validated before anything touches the disk.
@@ -229,8 +232,6 @@ export function snapshotProject(projectName: unknown, structure: unknown): Proje
 }
 
 export interface WriteOptions {
-  /** Digest of the approved plan, kept in the build journal. */
-  digest?: string;
   /** Test hook: called before each file is written. Throwing makes that file fail. */
   beforeFile?: (index: number, rel: string) => void;
 }
@@ -279,9 +280,18 @@ function recoverInterrupted(projectRoot: string, name: string): string | undefin
  * Module exports are not a security boundary against code already running
  * in this process; the guard governs the Genesis path, not hostile code.
  */
-export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, opts: WriteOptions = {}): ScaffoldResult {
+/** The digest a build is approved by: the exact files, in this exact output root. */
+export function planDigest(basePath: string, snap: ProjectSnapshot): string {
+  return digestOf({ root: path.resolve(basePath), project: snap.project, files: snap.files.map((f) => ({ path: f.rel, content: f.content })) });
+}
+
+export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, grant: unknown, opts: WriteOptions = {}): ScaffoldResult {
   const name = snap.project;
   const plan = snap.files;
+  const digest = planDigest(basePath, snap);
+  // Enforced here, before anything touches the disk, not only by the caller.
+  const g = consumeGrant(grant, { action: "fs.write", target: `project:${name}`, digest });
+  if (g.ok !== true) throw new ScaffoldError("GUARD_DENIED", `Build of ${name} refused by the writer: ${(g as { reason: string }).reason}.`);
 
   fs.mkdirSync(basePath, { recursive: true });
   const root = fs.realpathSync(basePath);
@@ -294,7 +304,7 @@ export function writeProjectConfined(basePath: string, snap: ProjectSnapshot, op
     throw new ScaffoldError("PROJECT_EXISTS", `Project already exists: ${name}`);
   }
 
-  const journal: Journal = startJournal(name, projectRoot, opts.digest ?? null);
+  const journal: Journal = startJournal(name, projectRoot, digest);
   const written: string[] = [];
   let rootFd = -1;
   const flags =
@@ -451,7 +461,7 @@ export class ScaffoldEngine {
 
     const root = path.resolve(this.basePath);
     const target = `project:${snap.project}`;
-    const digest = digestOf({ root, project: snap.project, files: snap.files.map((f) => ({ path: f.rel, content: f.content })) });
+    const digest = planDigest(this.basePath, snap);
     const decision = coreGuard(signer.sign({
       action: "fs.write",
       target,
@@ -471,7 +481,7 @@ export class ScaffoldEngine {
     }
 
     try {
-      return writeProjectConfined(this.basePath, snap, { digest });
+      return writeProjectConfined(this.basePath, snap, decision.grant);
     } catch (err) {
       this.reportIfHostile(err, target);
       throw err;

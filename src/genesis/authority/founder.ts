@@ -9,13 +9,13 @@ import {
   LOCKDOWN_FILE,
   LockdownRecord,
   PendingRequest,
-  digestFile,
+  approvalFile,
   listJSON,
   readJSON,
   writeJSONAtomic,
 } from "./store";
 import { requireFounder } from "../warden/passphrase";
-import { logEvent } from "../warden/state";
+import { lockdownActive, logEvent } from "../warden/state";
 
 /**
  * Founder-only Key Authority operations. Only the founder CLI (./cli.ts)
@@ -60,7 +60,7 @@ export function approve(id: string, passphrase: string, ttlMs: number = APPROVAL
     approvedAt: new Date().toISOString(),
     expiresAt: Date.now() + ttlMs,
   };
-  writeJSONAtomic(digestFile(DIRS.approvals, p.digest), approval);
+  writeJSONAtomic(approvalFile(p), approval);
   fs.rmSync(pendingFile(id), { force: true });
   logEvent({ type: "request-approved", id: p.id, actor: p.actor, action: p.action, target: p.target });
   return approval;
@@ -75,5 +75,8 @@ export function reject(id: string, passphrase: string): PendingRequest {
 }
 
 export function lockdownStatus(): LockdownRecord | null {
-  return readJSON(LOCKDOWN_FILE) as LockdownRecord | null;
+  const rec = readJSON(LOCKDOWN_FILE) as LockdownRecord | null;
+  if (rec) return rec;
+  const s = lockdownActive();
+  return s.locked ? { since: "(unknown: the lockdown file is missing)", incidents: [{ at: "", actor: "", action: "", target: "", reason: s.why }] } : null;
 }

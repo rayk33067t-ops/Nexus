@@ -6,6 +6,9 @@ import { loadMeeting } from "./core/MeetingLoader";
 import { loadTasks } from "./core/TaskLoader";
 import { startDailyCycle } from "./core/DailyCycle";
 import { startupGate } from "./warden/Warden";
+import { assertProductionPaths } from "./authority/store";
+
+assertProductionPaths("Genesis");
 
 
 // The Warden decides whether Genesis may start at all.

@@ -3,17 +3,43 @@ import fs from "fs";
 import path from "path";
 
 /**
- * Where Key Authority keeps its rules and state. Resolved once, when this
- * module first loads, from the environment the founder launched NEXUS with.
- * Nothing at runtime can repoint them.
+ * Where Key Authority keeps its rules and state.
  *
- *   NEXUS_RULES_PATH  default: <cwd>/config/key-authority.json
- *   NEXUS_STATE_DIR   default: <cwd>/.nexus
+ * Both are anchored to the NEXUS code itself (the folder this file lives in,
+ * three levels up), never to the folder NEXUS happens to be started from:
+ *
+ *   rules: <NEXUS>/config/key-authority.json
+ *   state: <NEXUS>/.nexus
+ *
+ * The NEXUS_ROOT, NEXUS_RULES_PATH and NEXUS_STATE_DIR environment variables
+ * can repoint them, so tests can run against temporary folders. The real
+ * entry points (Genesis, both Founder CLIs) refuse to start when any of them
+ * is set (see assertProductionPaths), so a launch can't quietly swap in a
+ * fresh state folder with its own passphrase and rules.
+ *
+ * Resolved once, when this module first loads. Nothing at runtime can repoint them.
  */
+export const CODE_ROOT = path.resolve(__dirname, "..", "..", "..");
+export const PATH_OVERRIDES = Object.freeze(["NEXUS_ROOT", "NEXUS_RULES_PATH", "NEXUS_STATE_DIR"] as const);
+
 export const PATHS = Object.freeze({
-  rulesPath: path.resolve(process.env.NEXUS_RULES_PATH || path.join(process.cwd(), "config", "key-authority.json")),
-  stateDir: path.resolve(process.env.NEXUS_STATE_DIR || path.join(process.cwd(), ".nexus")),
+  root: path.resolve(process.env.NEXUS_ROOT || CODE_ROOT),
+  rulesPath: path.resolve(process.env.NEXUS_RULES_PATH || path.join(CODE_ROOT, "config", "key-authority.json")),
+  stateDir: path.resolve(process.env.NEXUS_STATE_DIR || path.join(CODE_ROOT, ".nexus")),
 });
+
+/**
+ * For the real entry points: refuse to run when the rules, state or code
+ * location has been redirected through the environment.
+ */
+export function assertProductionPaths(entry: string): void {
+  const set = PATH_OVERRIDES.filter((k) => process.env[k] !== undefined && process.env[k] !== "");
+  if (!set.length) return;
+  console.error(`[${entry}] Refusing to start: ${set.join(", ")} ${set.length > 1 ? "are" : "is"} set.`);
+  console.error(`[${entry}] NEXUS always uses its own config/key-authority.json and .nexus under ${CODE_ROOT}.`);
+  console.error(`[${entry}] Those variables are for the test suite only. Unset them and run again.`);
+  process.exit(2);
+}
 
 export const DIRS = Object.freeze({
   pending: path.join(PATHS.stateDir, "pending"),
@@ -56,6 +82,16 @@ export function listJSON(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * File for one approval: keyed by everything it covers (actor, action, target
+ * and plan digest), so approving the same plan for two agents gives two
+ * separate approvals instead of one overwriting the other.
+ */
+export function approvalFile(r: { actor: string; action: string; target: string; digest: string }): string {
+  const key = crypto.createHash("sha256").update(JSON.stringify([r.actor, r.action, r.target, r.digest]), "utf-8").digest("hex");
+  return path.join(DIRS.approvals, `${key}.json`);
 }
 
 /** File name for a digest: the hex part only. */

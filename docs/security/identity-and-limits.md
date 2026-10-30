@@ -23,6 +23,25 @@
   signatures or passphrases. A refused request is attributed to an agent only
   when its signature proves which credential was used.
 
+- **Rules and state live with the code.** Key Authority reads
+  `config/key-authority.json` and keeps its state in `.nexus`, both inside the
+  NEXUS folder itself, whichever folder NEXUS is started from. Genesis and both
+  Founder CLIs refuse to start if `NEXUS_ROOT`, `NEXUS_RULES_PATH` or
+  `NEXUS_STATE_DIR` is set; those are for the test suite only. A rules file that
+  is a link is refused.
+- **Approvals are claimed, then checked.** Each approval is stored under the exact
+  agent, action, target and plan it covers. Using one first moves it, atomically,
+  to a name only that request knows; only then is it read and checked. Racing
+  requests can't both use it, and approving the same plan for two agents gives
+  two approvals.
+- **Lockdown lives in the Warden's chained log.** Starting lockdown writes a
+  "lockdown" event; only the Founder's `lockdown:clear` writes "lockdown-cleared".
+  Deleting the lockdown file doesn't end it, and a log that can't be verified keeps
+  NEXUS locked.
+- **Protected writes check the decision themselves.** When the guard allows a
+  build it hands back a one-time grant for exactly that plan, project and output
+  folder, valid for 60 seconds. The writer refuses to touch the disk without one.
+
 ## The limit: one Termux user
 
 Genesis and the Founder currently run as the **same Termux operating-system
@@ -41,6 +60,14 @@ multi-user separation the way a server does.
 
 Other known limits:
 
+- The environment variables can still redirect the library code when it's
+  called from someone's own script; only the real entry points refuse them.
+  That is hostile code running as the same user, covered by the limit above.
+- Deleting the whole event log, its head and the lockdown file together resets
+  lockdown, because the log then looks new and empty. Note the head printed by
+  `npm run warden -- log` somewhere off the phone to detect that.
+- Grants live in memory and are only as private as the process: code already
+  running inside the NEXUS process could use one before the writer does.
 - If the passphrase hash file is deleted, the next `warden -- init` can set a
   new passphrase without the old one. The Warden's code-integrity check and event
   log make that visible, but they can't prevent it.

@@ -17,7 +17,7 @@ import {
 import { manifest } from "./integrity";
 import { tamperFile, verifyLog } from "./log";
 import { hasPassphrase, requireFounder, setPassphrase, verifyPassphrase } from "./passphrase";
-import { AGENT_RE, BASELINE_FILE, HEAD_FILE, LOG_FILE, WARDEN_DIR, allAgents, getAgent, logEvent, restoreAgent } from "./state";
+import { AGENT_RE, BASELINE_FILE, HEAD_FILE, LOG_FILE, WARDEN_DIR, allAgents, getAgent, lockdownActive, logEvent, restoreAgent } from "./state";
 import { Baseline, ROOT, check } from "./Warden";
 
 /**
@@ -73,7 +73,11 @@ export function clearLockdown(pass: string): boolean {
   requirePass(pass, "lockdown.clear");
   const stuck = allAgents().filter((a) => a.status === "quarantined").map((a) => a.agent);
   if (stuck.length) throw new Error(`Release or keep these agents first; they are still quarantined: ${stuck.join(", ")}.`);
-  if (!fs.existsSync(LOCKDOWN_FILE)) return false;
+  const state = lockdownActive();
+  if (!state.locked) return false;
+  if (state.why.startsWith("the Warden's event log can't be trusted")) {
+    throw new Error(`Can't clear lockdown while ${state.why}. Review it with npm run warden -- log, then archive it with npm run warden -- reset-log.`);
+  }
   fs.rmSync(LOCKDOWN_FILE, { force: true });
   logEvent({ type: "lockdown-cleared" });
   return true;

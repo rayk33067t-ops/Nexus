@@ -10,9 +10,15 @@ import path from "path";
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-recovery-"));
 const STATE = path.join(ROOT, "state");
 process.env.NEXUS_STATE_DIR = STATE;
-process.env.NEXUS_RULES_PATH = path.join(ROOT, "no-rules.json");
+process.env.NEXUS_RULES_PATH = path.join(ROOT, "rules.json");
+fs.writeFileSync(process.env.NEXUS_RULES_PATH, JSON.stringify({ version: 1, rules: [{ id: "build", actor: "builder", action: "fs.write", target: "project:*", effect: "allow" }] }));
 
-const { snapshotProject, writeProjectConfined, ScaffoldError } = require("../src/genesis/scaffold");
+const scaffold = require("../src/genesis/scaffold");
+const { snapshotProject, ScaffoldError } = scaffold;
+const { issue, grantFor } = require("./support");
+const builder = issue("builder");
+// Every write needs a real grant from the guard, exactly as ScaffoldEngine gets one.
+const writeProjectConfined = (base: string, s: any, opts?: any) => scaffold.writeProjectConfined(base, s, grantFor(builder, base, s), opts);
 const journal = require("../src/genesis/buildJournal");
 const state = require("../src/genesis/warden/state");
 const { readLog } = require("../src/genesis/warden/log");
@@ -77,11 +83,13 @@ test("a build that fails after writing some files removes exactly those, then re
 
 /** Run a build in a separate process that dies partway through, like a crash. */
 function crashMidBuild(base: string, atIndex: number) {
-  const scaffold = path.join(__dirname, "..", "src", "genesis", "scaffold");
+  const scaffoldPath = path.join(__dirname, "..", "src", "genesis", "scaffold");
   const code = `
-    const s = require(${JSON.stringify(scaffold)});
+    const s = require(${JSON.stringify(scaffoldPath)});
+    const { grantFor } = require(${JSON.stringify(path.join(__dirname, "support"))});
+    const signer = require(${JSON.stringify(path.join(__dirname, "..", "src", "genesis", "authority", "credentials"))}).loadAgentSigner("builder");
     const snap = s.snapshotProject("demo", ${JSON.stringify(plan)});
-    s.writeProjectConfined(${JSON.stringify(base)}, snap, { beforeFile: (i) => { if (i === ${atIndex}) process.exit(9); } });
+    s.writeProjectConfined(${JSON.stringify(base)}, snap, grantFor(signer, ${JSON.stringify(base)}, snap), { beforeFile: (i) => { if (i === ${atIndex}) process.exit(9); } });
   `;
   try {
     execFileSync(process.execPath, ["-r", "ts-node/register", "-e", code], { env: { ...process.env }, cwd: path.join(__dirname, ".."), stdio: "pipe" });

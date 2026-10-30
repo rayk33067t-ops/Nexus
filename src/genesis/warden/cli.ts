@@ -19,6 +19,9 @@
  * operation itself checks it too, not just this CLI.
  */
 
+import { assertProductionPaths } from "../authority/store";
+assertProductionPaths("warden");
+
 import { verifyLog, readLog } from "./log";
 import { HEAD_FILE, LOG_FILE } from "./state";
 import { WardenReport, check } from "./Warden";

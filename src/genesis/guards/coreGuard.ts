@@ -15,6 +15,12 @@
  *  - An allow is not permission to act later. The protected operation must
  *    still do its own checks at the moment of use, on its private snapshot.
  *  - Any error inside Key Authority is a denial.
+ *  - An allow comes with a grant: a one-time token for exactly that action,
+ *    target and plan digest. Protected operations refuse to act without one
+ *    (consumeGrant), so calling them directly, skipping the guard, does
+ *    nothing. Grants can only be made here: they live in a private WeakSet,
+ *    so an object that merely looks like one is refused. A grant expires
+ *    after GRANT_TTL_MS and works once.
  */
 
 import { decide } from "../authority/KeyAuthority";
@@ -25,8 +31,44 @@ export const PROTECTED_ACTIONS = Object.freeze([
   "chronicle.append",
 ] as const);
 
+/** A one-time permission for one exact protected action. Opaque outside this module. */
+export interface Grant {
+  readonly action: string;
+  readonly target: string;
+  readonly digest: string;
+  readonly actor: string;
+  readonly expiresAt: number;
+}
+
+export const GRANT_TTL_MS = 60_000;
+const grants = new WeakSet<object>();
+
+function issueGrant(actor: string, action: string, target: string, digest: string): Grant {
+  const g = Object.freeze({ actor, action, target, digest, expiresAt: Date.now() + GRANT_TTL_MS });
+  grants.add(g);
+  return g;
+}
+
+/**
+ * For protected operations: accept a grant once, only if it was issued by
+ * coreGuard for exactly this action, target and plan digest, and hasn't
+ * expired. Returns the agent it was issued to, or a reason it was refused.
+ */
+export function consumeGrant(grant: unknown, expect: { action: string; target: string; digest: string }): { ok: true; actor: string } | { ok: false; reason: string } {
+  if (!grant || typeof grant !== "object" || !grants.has(grant)) return { ok: false, reason: "no grant from the guard" };
+  grants.delete(grant); // one use, whatever happens next
+  const g = grant as Grant;
+  if (g.expiresAt <= Date.now()) return { ok: false, reason: "the grant has expired" };
+  if (g.action !== expect.action || g.target !== expect.target || g.digest !== expect.digest) {
+    return { ok: false, reason: "the grant is for a different action, target or plan" };
+  }
+  return { ok: true, actor: g.actor };
+}
+
 export interface GuardDecision {
   readonly allowed: boolean;
+  /** Present only when allowed: the one-time grant the protected operation needs. */
+  readonly grant: Grant | null;
   /** True when the request is waiting for the founder's approval. */
   readonly pending: boolean;
   /** Id to approve with `npm run authority -- approve <id>` when pending. */
@@ -56,9 +98,10 @@ function decision(
   action = "",
   target = "",
   pending = false,
-  requestId: string | null = null
+  requestId: string | null = null,
+  grant: Grant | null = null
 ): GuardDecision {
-  return Object.freeze({ allowed, pending, requestId, reason, actor, action, target });
+  return Object.freeze({ allowed, grant, pending, requestId, reason, actor, action, target });
 }
 
 export function coreGuard(request: unknown): GuardDecision {
@@ -99,7 +142,9 @@ export function coreGuard(request: unknown): GuardDecision {
   }
 
   const who = out.actor ?? "";
-  if (out.outcome === "allow") return decision(true, out.reason, who, action, target);
+  if (out.outcome === "allow") {
+    return decision(true, out.reason, who, action, target, false, null, issueGrant(who, action, target, digest));
+  }
   if (out.outcome === "ask") return decision(false, out.reason, who, action, target, true, out.requestId);
   return decision(false, out.reason, who, action, target);
 }

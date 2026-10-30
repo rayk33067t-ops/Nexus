@@ -18,7 +18,7 @@ const {
   snapshotProject,
   writeProjectConfined,
 } = require("../src/genesis/scaffold");
-const { issue } = require("./support");
+const { issue, grantFor } = require("./support");
 
 const D = "sha256:" + "0".repeat(64);
 
@@ -99,8 +99,18 @@ function code(fn: () => unknown): string {
   return "NO_ERROR";
 }
 
-const write = (base: string, name: unknown, structure: unknown): any =>
-  writeProjectConfined(base, snapshotProject(name, structure));
+// The writer needs a real grant. These tests run with no rules file, so allow
+// builds just long enough to get one, then remove the rules again.
+const RULES = process.env.NEXUS_RULES_PATH as string;
+// A separate agent: Genesis is (correctly) quarantined by a traversal test above.
+const writer = issue("writer");
+const write = (base: string, name: unknown, structure: unknown): any => {
+  const snap = snapshotProject(name, structure);
+  fs.writeFileSync(RULES, JSON.stringify({ version: 1, rules: [{ id: "t", actor: "writer", action: "fs.write", target: "project:*", effect: "allow" }] }));
+  let grant;
+  try { grant = grantFor(writer, base, snap); } finally { fs.rmSync(RULES, { force: true }); }
+  return writeProjectConfined(base, snap, grant);
+};
 
 test("createProject refuses every build when there are no rules, and writes nothing", () => {
   const { base } = sandbox();

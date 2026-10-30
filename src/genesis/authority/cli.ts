@@ -10,7 +10,9 @@
  *   (end lockdown with: npm run warden -- lockdown:clear)
  */
 
-import { PATHS } from "./store";
+import { PATHS, assertProductionPaths } from "./store";
+
+assertProductionPaths("authority");
 import { loadRules } from "./KeyAuthority";
 import { approve, getPending, listPending, lockdownStatus, reject } from "./founder";
 import { ask, closeReader } from "../cliPrompt";
