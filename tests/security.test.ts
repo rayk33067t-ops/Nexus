@@ -57,6 +57,8 @@ test("decision is frozen and does not hand back the caller's object", () => {
   assert.notEqual(d as unknown, req);
   assert.throws(() => { (d as any).allowed = true; });
   req.target = "project:b";
+  req.digest = "sha256:changed";
+  assert.equal(d.digest, D);
   assert.equal(d.target, "project:a");
 });
 

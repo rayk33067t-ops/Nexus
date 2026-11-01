@@ -48,6 +48,7 @@ export interface GuardDecision {
   readonly actor: string;
   readonly action: string;
   readonly target: string;
+  readonly digest: string;
 }
 
 const MAX_FIELD = 1024;
@@ -66,9 +67,10 @@ function decision(
   action = "",
   target = "",
   pending = false,
-  requestId: string | null = null
+  requestId: string | null = null,
+  digest = ""
 ): GuardDecision {
-  return Object.freeze({ allowed, pending, requestId, reason, actor, action, target });
+  return Object.freeze({ allowed, pending, requestId, reason, actor, action, target, digest });
 }
 
 export function coreGuard(request: unknown): GuardDecision {
@@ -88,7 +90,7 @@ export function coreGuard(request: unknown): GuardDecision {
     return decision(false, "actor, action and target must be non-empty strings");
   }
   if (!(PROTECTED_ACTIONS as readonly string[]).includes(action)) {
-    return decision(false, `unknown action "${action}"`, actor, action, target);
+    return decision(false, `unknown action "${action}"`, actor, action, target, false, null, digest ?? "");
   }
   if (digest === null) {
     return decision(false, "request must carry the digest of its exact plan", actor, action, target);
@@ -99,10 +101,10 @@ export function coreGuard(request: unknown): GuardDecision {
   try {
     out = decide({ actor, action, target, digest, summary });
   } catch (err: any) {
-    return decision(false, `Key Authority failed (${err?.message ?? "unknown error"}); denied`, actor, action, target);
+    return decision(false, `Key Authority failed (${err?.message ?? "unknown error"}); denied`, actor, action, target, false, null, digest);
   }
 
-  if (out.outcome === "allow") return decision(true, out.reason, actor, action, target);
-  if (out.outcome === "ask") return decision(false, out.reason, actor, action, target, true, out.requestId);
-  return decision(false, out.reason, actor, action, target);
+  if (out.outcome === "allow") return decision(true, out.reason, actor, action, target, false, null, digest);
+  if (out.outcome === "ask") return decision(false, out.reason, actor, action, target, true, out.requestId, digest);
+  return decision(false, out.reason, actor, action, target, false, null, digest);
 }
