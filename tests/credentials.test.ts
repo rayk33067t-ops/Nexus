@@ -69,6 +69,28 @@ function protectedState(): Record<string, string> {
   return out;
 }
 
+test("signerFromPem exports the public key matching its signature", () => {
+  const signer = rogueSigner();
+  const signed = signer.sign(body());
+  const { signature, ...unsigned } = signed;
+
+  const publicKey = crypto.createPublicKey({
+    key: Buffer.from(signer.publicKey, "base64"),
+    format: "der",
+    type: "spki",
+  });
+
+  assert.equal(
+    crypto.verify(
+      null,
+      Buffer.from(creds.signedPayload(unsigned), "utf-8"),
+      publicKey,
+      Buffer.from(signature, "base64"),
+    ),
+    true,
+  );
+});
+
 // 1
 test("a forged Genesis identity is refused: a key nobody issued, or just the name", () => {
   const forged = rogueSigner().sign(body());

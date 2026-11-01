@@ -207,7 +207,7 @@ export interface AgentSigner {
 export function signerFromPem(privateKeyPem: string): AgentSigner {
   const priv = crypto.createPrivateKey(privateKeyPem);
   if (priv.asymmetricKeyType !== "ed25519") throw new Error("Not a NEXUS agent key (Ed25519 required).");
-  const publicKey = crypto.createPublicKey(priv).export({ type: "spki", format: "der" }).toString("base64");
+  const publicKey = crypto.createPublicKey(privateKeyPem).export({ type: "spki", format: "der" }).toString("base64");
   const sign = (body: RequestBody): SignedRequest => {
     const unsigned = {
       v: 1 as const, publicKey,
