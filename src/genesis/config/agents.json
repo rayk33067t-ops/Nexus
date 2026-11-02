@@ -9,6 +9,11 @@
       "status": "Online"
     },
     {
+      "name": "Savannah",
+      "role": "Security Counterpart",
+      "status": "Ready"
+    },
+    {
       "name": "Builder",
       "role": "Implementation and Creation",
       "status": "Ready"
