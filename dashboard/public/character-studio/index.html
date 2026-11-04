@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#020613">
+  <title>Character Studio · NEXUS</title>
+  <link rel="stylesheet" href="./studio.css">
+</head>
+<body>
+  <canvas id="stage" aria-label="3D character studio"></canvas>
+
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <div>
+        <h1>NEXUS Character Development Studio</h1>
+        <p class="sub">Phase 1 · procedural prototypes · development environment</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="quality" class="ghost" type="button" title="Rendering quality">Quality: high</button>
+    </div>
+  </header>
+
+  <nav id="chips" class="chips" aria-label="Characters"></nav>
+
+  <div id="joystick" class="joystick" hidden aria-label="Walk joystick">
+    <div class="knob"></div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <aside id="panel" class="panel" aria-label="Studio controls">
+    <button id="grip" class="grip" type="button" aria-label="Expand or collapse panel"><span></span></button>
+    <div id="tabs" class="tabs" role="tablist"></div>
+    <div id="tabbody" class="tabbody"></div>
+  </aside>
+
+  <noscript>The studio needs JavaScript and WebGL.</noscript>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

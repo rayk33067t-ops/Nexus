@@ -1,0 +1,6 @@
+{
+  "name": "nexus-character-studio",
+  "private": true,
+  "type": "module",
+  "description": "Marks this folder as ES modules so Node can run its tests; dashboard/package.json declares commonjs."
+}
