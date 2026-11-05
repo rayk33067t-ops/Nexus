@@ -1,25 +1,19 @@
 import fs from "fs";
 import path from "path";
-
 export function loadFoundation() {
-  const file = path.join(
-    process.cwd(),
-    "../../genesis/config/founder-principles.json"
-  );
-
-  if (!fs.existsSync(file)) {
-    return {
-      status: "missing",
-      message: "Founder's Charter not found"
-    };
+  const cand = [
+    path.join(process.cwd(), "src/genesis/config/founder-principles.json"),
+    path.join(process.cwd(), "src/genesis/config/agents.json"),
+    path.join(__dirname, "../config/founder-principles.json"),
+    path.join(__dirname, "../config/agents.json"),
+  ];
+  for (const f of cand) {
+    if (fs.existsSync(f)) {
+      try {
+        const d = JSON.parse(fs.readFileSync(f, "utf-8"));
+        return { status: "loaded", file: f, charter: d.name || "NEXUS", principles: d.principles || [], identity: d.core_identity || null };
+      } catch { continue; }
+    }
   }
-
-  const data = JSON.parse(fs.readFileSync(file, "utf-8"));
-
-  return {
-    status: "loaded",
-    charter: data.name,
-    principles: data.principles,
-    identity: data.core_identity
-  };
+  return { status: "missing", message: "Charter not found" };
 }

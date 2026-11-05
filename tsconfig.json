@@ -5,6 +5,12 @@
     "moduleResolution": "node",
     "esModuleInterop": true,
     "strict": false,
-    "types": ["node"]
-  }
+    "types": [
+      "node"
+    ]
+  },
+  "exclude": [
+    "output.generated.ts",
+    "src/genesis/run.broken.backup.ts"
+  ]
 }

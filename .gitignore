@@ -1,9 +1,12 @@
-node_modules
-dist
-build
-*.log
-.DS_Store
-npm-debug.log*
-
-# Key Authority runtime state (pending requests, approvals, lockdown)
-.nexus/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+node_modules/
+.env
+*.key
+*.secret
+*_1.db
+*.broken.backup.ts
+output.generated.ts
+hhhgyu8
