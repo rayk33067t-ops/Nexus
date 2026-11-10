@@ -1,12 +1,49 @@
-*.db
-*.db-shm
-*.db-wal
-*.sqlite
-node_modules/
+# Environment and secrets
 .env
+.env.*
+*.env
+*.pem
 *.key
-*.secret
-*_1.db
-*.broken.backup.ts
-output.generated.ts
-hhhgyu8
+secrets/
+credentials/
+
+# Metering logs
+meter.jsonl
+*.jsonl
+control-plane/meter.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Model weights
+*.gguf
+*.bin
+*.safetensors
+models/weights/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Logs
+*.log
+logs/
+node_modules/
+*.db
+*.db-*
+backups/
+chronicle/backups/
