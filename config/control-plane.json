@@ -1,0 +1,26 @@
+{
+  "host": "127.0.0.1",
+  "port": 4100,
+  "agents": ["genesis", "savannah", "aria", "orb"],
+  "providers": {
+    "deepseek": { "baseUrl": "https://api.deepseek.com", "keyEnv": "NEXUS_KEY_DEEPSEEK" },
+    "local": { "baseUrl": "http://127.0.0.1:8080/v1", "keyEnv": null }
+  },
+  "models": {
+    "nexus-primary": [
+      { "provider": "deepseek", "model": "deepseek-flash" },
+      { "provider": "local", "model": "local" }
+    ],
+    "nexus-coder": [
+      { "provider": "deepseek", "model": "deepseek-flash" },
+      { "provider": "local", "model": "local" }
+    ],
+    "nexus-fast": [
+      { "provider": "local", "model": "local" },
+      { "provider": "deepseek", "model": "deepseek-flash" }
+    ]
+  },
+  "perAgentDailyTokenCap": 200000,
+  "maxOutputTokens": 4096,
+  "upstreamTimeoutMs": 120000
+}

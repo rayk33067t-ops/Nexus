@@ -8,7 +8,8 @@
     "warden": "ts-node src/genesis/warden/cli.ts",
     "worlds": "ts-node src/genesis/worlds/registry.ts",
     "dashboard": "node dashboard/server.js",
-    "vault": "ts-node src/genesis/vault/cli.ts"
+    "vault": "ts-node src/genesis/vault/cli.ts",
+    "control-plane": "ts-node src/controlPlane/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
