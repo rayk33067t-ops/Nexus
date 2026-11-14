@@ -2,6 +2,7 @@ import path from "path";
 
 import { challenge, reportHostile } from "../authority/KeyAuthority";
 import { digestOf } from "../authority/canonical";
+import { AgentSigner, SignedRequest } from "../authority/credentials";
 import { KNOWN_AGENTS } from "../warden/state";
 
 /**
@@ -43,6 +44,12 @@ export interface Plan {
   target: string;
   digest: string;
   summary?: string;
+  /**
+   * The agent's own signed request for this plan, if it has one. A hostile
+   * report carries it, so the Warden quarantines the agent that really sent
+   * the plan; without it NEXUS still locks down, but no agent is blamed.
+   */
+  request?: SignedRequest;
   /** Present for fs.write plans so Savannah can read what would be written. */
   root?: string;
   project?: string;
@@ -222,27 +229,37 @@ export function reviewPlan(plan: Plan): Review {
  * A challenge is filed against the plan's digest; a hostile plan is reported,
  * which locks NEXUS down and quarantines the actor.
  */
-export function runSavannah(plan: Plan, state: SavannahState) {
+export function runSavannah(plan: Plan, state: SavannahState, savannah?: AgentSigner) {
   const review = reviewPlan(plan);
   state.reviewed += 1;
   state.lastDigest = review.digest || null;
 
+  // Savannah's challenge is signed with her own credential: Key Authority
+  // accepts a challenge only from her. Without her key she cannot file one,
+  // and says so instead of pretending.
+  const fileChallenge = (): boolean => {
+    if (!savannah || !DIGEST_RE.test(review.digest)) return false;
+    return challenge(
+      savannah.sign({ action: "plan.challenge", target: String(plan?.target ?? ""), digest: review.digest }),
+      review.reason
+    );
+  };
+
   let acted = false;
+  let note = "";
   if (review.verdict === "hostile") {
-    reportHostile({
-      actor: String(plan?.actor ?? ""),
-      action: String(plan?.action ?? ""),
-      target: String(plan?.target ?? ""),
-      reason: `Savannah: ${review.reason}`,
-    });
+    // Always locks NEXUS down. Blames an agent only if the plan carries that
+    // agent's valid signed request.
+    reportHostile(plan?.request ?? { action: String(plan?.action ?? ""), target: String(plan?.target ?? "") }, `Savannah: ${review.reason}`);
     // Also challenge the digest, so this exact plan stays blocked even after
     // the lockdown is lifted.
-    if (DIGEST_RE.test(review.digest)) challenge({ actor: "savannah", digest: review.digest, reason: review.reason });
+    if (!fileChallenge()) note = "challenge not filed: Savannah has no credential to sign it";
     state.hostile += 1;
     state.mode = "LOCKDOWN";
     acted = true;
-  } else if (review.verdict === "challenge" && DIGEST_RE.test(review.digest)) {
-    acted = challenge({ actor: "savannah", digest: review.digest, reason: review.reason });
+  } else if (review.verdict === "challenge") {
+    acted = fileChallenge();
+    if (!acted) note = "challenge not filed: Savannah has no credential to sign it";
     state.challenged += 1;
     if (state.mode === "WATCH") state.mode = "ALERT";
   }
@@ -252,5 +269,6 @@ export function runSavannah(plan: Plan, state: SavannahState) {
     state,
     review,
     acted,
+    note,
   };
 }

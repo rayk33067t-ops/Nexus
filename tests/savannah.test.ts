@@ -14,6 +14,7 @@ process.env.NEXUS_STATE_DIR = STATE;
 const S = require("../src/genesis/core/SavannahBrain");
 const KA = require("../src/genesis/authority/KeyAuthority");
 const { digestOf } = require("../src/genesis/authority/canonical");
+const { issue } = require("./support");
 
 const BUILD_ROOT = "/nexus/output/projects";
 
@@ -39,10 +40,17 @@ function allowAll() {
   fs.writeFileSync(RULES, JSON.stringify({ version: 1, rules: [{ id: "build", actor: "genesis", action: "fs.write", target: "project:*", effect: "allow" }] }));
 }
 
+let genesis: any;
+let savannah: any;
 beforeEach(() => {
   fs.rmSync(STATE, { recursive: true, force: true });
   fs.rmSync(RULES, { force: true });
+  genesis = issue("genesis");
+  savannah = issue("savannah");
 });
+
+/** Genesis's signed request for a plan, as Key Authority receives it. */
+const signed = (p: any) => genesis.sign({ action: p.action, target: p.target, digest: p.digest });
 
 // ---------- verdicts ----------
 
@@ -124,39 +132,59 @@ test("unknown agents, Savannah acting, odd targets and unreadable plans are chal
 test("a clean plan leaves Key Authority's decision alone", () => {
   allowAll();
   const p = ok();
-  const out = S.runSavannah(p, S.createSavannahState());
+  const out = S.runSavannah(p, S.createSavannahState(), savannah);
   assert.equal(out.review.verdict, "pass");
   assert.equal(out.acted, false);
   assert.equal(out.state.mode, "WATCH");
-  assert.equal(KA.decide(p).outcome, "allow");
+  assert.equal(KA.decide(signed(p)).outcome, "allow");
 });
 
 test("a challenge turns allow into ask for that exact plan only", () => {
   allowAll();
   const risky = plan([{ path: "a.js", content: "require('child_process')" }]);
-  const out = S.runSavannah(risky, S.createSavannahState());
+  const out = S.runSavannah(risky, S.createSavannahState(), savannah);
   assert.equal(out.acted, true);
   assert.equal(out.state.mode, "ALERT");
   assert.equal(KA.isChallenged(risky.digest), true);
-  assert.equal(KA.decide(risky).outcome, "ask");
-  assert.equal(KA.decide(ok()).outcome, "allow");
+  assert.equal(KA.decide(signed(risky)).outcome, "ask");
+  assert.equal(KA.decide(signed(ok())).outcome, "allow");
 });
 
 test("a hostile plan locks NEXUS down and stays challenged", () => {
   allowAll();
   const bad = plan([{ path: ".nexus/approvals/x.json", content: "{}" }]);
-  const out = S.runSavannah(bad, S.createSavannahState());
+  const out = S.runSavannah({ ...bad, request: signed(bad) }, S.createSavannahState(), savannah);
   assert.equal(out.review.verdict, "hostile");
   assert.equal(out.state.mode, "LOCKDOWN");
   assert.equal(KA.isLockedDown(), true);
   assert.equal(KA.isChallenged(bad.digest), true);
-  assert.notEqual(KA.decide(ok()).outcome, "allow");
+  assert.notEqual(KA.decide(signed(ok())).outcome, "allow");
+});
+
+test("without her own key Savannah cannot file a challenge, and says so", () => {
+  allowAll();
+  const risky = plan([{ path: "a.js", content: "require('child_process')" }]);
+  const out = S.runSavannah(risky, S.createSavannahState());
+  assert.equal(out.review.verdict, "challenge");
+  assert.equal(out.acted, false);
+  assert.match(out.note, /no credential/);
+  assert.equal(KA.isChallenged(risky.digest), false);
+  // A key that isn't Savannah's cannot challenge either.
+  const asGenesis = S.runSavannah(risky, S.createSavannahState(), genesis);
+  assert.equal(asGenesis.acted, false);
+  assert.equal(KA.isChallenged(risky.digest), false);
+});
+
+test("a hostile plan with no signed request still locks NEXUS down", () => {
+  const bad = plan([{ path: ".nexus/approvals/x.json", content: "{}" }]);
+  S.runSavannah(bad, S.createSavannahState(), savannah);
+  assert.equal(KA.isLockedDown(), true);
 });
 
 test("state counts every review", () => {
   const st = S.createSavannahState();
-  S.runSavannah(ok(), st);
-  S.runSavannah(plan([{ path: "a.js", content: "eval(x)" }]), st);
+  S.runSavannah(ok(), st, savannah);
+  S.runSavannah(plan([{ path: "a.js", content: "eval(x)" }]), st, savannah);
   assert.equal(st.reviewed, 2);
   assert.equal(st.challenged, 1);
   assert.equal(st.hostile, 0);
