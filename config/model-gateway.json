@@ -1,0 +1,8 @@
+{
+  "url": "http://127.0.0.1:4100/v1/nexus/model",
+  "defaultModel": "nexus-primary",
+  "allowedModels": ["nexus-primary", "nexus-coder", "nexus-fast"],
+  "dailyTokenCap": 200000,
+  "maxOutputTokens": 4096,
+  "timeoutMs": 120000
+}
