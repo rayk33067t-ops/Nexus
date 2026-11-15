@@ -42,7 +42,7 @@ htmlcov/
 # Logs
 *.log
 logs/
-node_modules/
+node_modules
 *.db
 *.db-*
 backups/
