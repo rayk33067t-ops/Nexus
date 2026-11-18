@@ -1,0 +1,28 @@
+{
+  "clientUrl": "http://127.0.0.1:4100/v1/nexus/voice",
+  "clientTimeoutMs": 60000,
+  "providers": {
+    "elevenlabs": { "kind": "elevenlabs", "baseUrl": "https://api.elevenlabs.io", "keyEnv": "NEXUS_KEY_ELEVENLABS" },
+    "localtts": { "kind": "openai-speech", "baseUrl": "http://127.0.0.1:8090/v1", "keyEnv": null }
+  },
+  "voices": {
+    "nexus-genesis": {
+      "ownerAgent": "genesis",
+      "gender": "female",
+      "accent": "North Jersey",
+      "languages": ["en-US"],
+      "verifiedLanguages": [],
+      "chain": [
+        {
+          "provider": "elevenlabs",
+          "voiceId": "REPLACE_WITH_CHOSEN_VOICE_ID",
+          "model": "eleven_multilingual_v2",
+          "modelByLanguage": { "fa": "eleven_v3" }
+        }
+      ]
+    }
+  },
+  "perAgentDailyCharCap": 5000,
+  "maxTextChars": 1000,
+  "upstreamTimeoutMs": 30000
+}
