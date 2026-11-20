@@ -140,14 +140,27 @@ test("racing processes: one approval allows exactly one request", { timeout: 180
       fs.appendFileSync(${JSON.stringify(dir)} + "/out-" + r, KA.decide(signed).outcome + "\\n");
     }`;
   const procs: any[] = [];
+  let crashed = "";
   const kids = Array.from({ length: N }, (_, i) => new Promise<void>((res, rej) => {
-    const c = spawn(process.execPath, ["-r", "ts-node/register", "-e", racer], { cwd: REPO, env: { ...process.env, RACER: String(i) }, stdio: "ignore" });
+    // Racers skip type-checking (the suite already type-checks this code): ~140 MB each instead of ~250 MB,
+    // so eight at once fit in a phone's memory.
+    const c = spawn(process.execPath, ["-r", TS_NODE, "-e", racer], { cwd: REPO, env: { ...process.env, RACER: String(i), TS_NODE_TRANSPILE_ONLY: "true" }, stdio: "ignore" });
     procs.push(c);
-    c.on("exit", (code) => (code === 0 ? res() : rej(new Error(`racer exited ${code}`))));
+    c.on("exit", (code) => {
+      if (code === 0) return res();
+      crashed ||= `racer ${i} exited ${code} before finishing`;
+      rej(new Error(crashed));
+    });
   }));
   kids.forEach((k) => k.catch(() => {}));
   t.after(() => { for (const c of procs) if (c.exitCode === null) c.kill("SIGKILL"); }); // never leave racers spinning
-  const wait = async (ok: () => boolean) => { while (!ok()) await new Promise((s) => setTimeout(s, 10)); };
+  // fail at once if a racer dies, instead of waiting for it until the timeout
+  const wait = async (ok: () => boolean) => {
+    while (!ok()) {
+      if (crashed) throw new Error(crashed);
+      await new Promise((s) => setTimeout(s, 10));
+    }
+  };
   const count = (p: string) => fs.readdirSync(dir).filter((f) => f.startsWith(p)).length;
   const lines = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, "utf-8").trim().split("\n").filter(Boolean) : []);
   for (let r = 0; r < ROUNDS; r++) {
