@@ -40,12 +40,15 @@ beforeEach(() => {
 
 // ---------- 1. where the rules (and state) come from ----------
 
+// Resolved from this test file, so a child started in any folder (home, /tmp) can still load it.
+const TS_NODE = require.resolve("ts-node/register");
+
 function inChild(cwd: string, env: Record<string, string | undefined>, code: string): { status: number; out: string } {
   const clean: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (!["NEXUS_ROOT", "NEXUS_RULES_PATH", "NEXUS_STATE_DIR"].includes(k) && v !== undefined) clean[k] = v;
   for (const [k, v] of Object.entries(env)) if (v !== undefined) clean[k] = v;
   try {
-    const out = execFileSync(process.execPath, ["-r", "ts-node/register", "-e", code], { cwd, env: { ...clean, TS_NODE_PROJECT: path.join(REPO, "tsconfig.json") }, stdio: "pipe" }).toString();
+    const out = execFileSync(process.execPath, ["-r", TS_NODE, "-e", code], { cwd, env: { ...clean, TS_NODE_PROJECT: path.join(REPO, "tsconfig.json") }, stdio: "pipe" }).toString();
     return { status: 0, out };
   } catch (e: any) {
     return { status: e.status ?? 1, out: String(e.stdout ?? "") + String(e.stderr ?? "") };
@@ -59,8 +62,11 @@ test("rules and state are anchored to the NEXUS code, not the folder NEXUS was s
   const repo = fs.realpathSync(REPO);
   assert.equal(fs.realpathSync(path.dirname(path.dirname(fromHome.rulesPath))), repo);
   assert.deepEqual(fromHome, fromTmp);
-  assert.equal(fromHome.rulesPath, path.join(path.resolve(REPO), "config", "key-authority.json"));
-  assert.equal(fromHome.stateDir, path.join(path.resolve(REPO), ".nexus"));
+  // compared as real paths: on Android the same folder can be spelled /data/data/... or /data/user/0/...
+  assert.equal(fs.realpathSync(path.dirname(fromHome.rulesPath)), path.join(repo, "config"));
+  assert.equal(path.basename(fromHome.rulesPath), "key-authority.json");
+  assert.equal(fs.realpathSync(path.dirname(fromHome.stateDir)), repo);
+  assert.equal(path.basename(fromHome.stateDir), ".nexus");
 });
 
 test("Genesis and both Founder CLIs refuse to start with redirected rules or state", () => {
