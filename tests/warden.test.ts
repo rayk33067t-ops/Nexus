@@ -29,10 +29,11 @@ const state = require("../src/genesis/warden/state");
 const log = require("../src/genesis/warden/log");
 const W = require("../src/genesis/warden/Warden");
 const F = require("../src/genesis/warden/founder");
+const { issue, PASS } = require("./support");
 
-const PASS = "correct horse battery";
 const D = digestOf({ plan: "x" });
-const req = (over: object = {}) => ({ actor: "genesis", action: "fs.write", target: "project:demo", digest: D, ...over });
+let genesis: any;
+const req = (over: object = {}, signer: any = genesis) => signer.sign({ action: "fs.write", target: "project:demo", digest: D, ...over });
 const rule = (id: string, actor: string, action: string, target: string, effect: string) => ({ id, actor, action, target, effect });
 const rules = (list: object[]) => fs.writeFileSync(RULES, JSON.stringify({ version: 1, rules: list }));
 
@@ -40,6 +41,7 @@ beforeEach(() => {
   fs.rmSync(STATE, { recursive: true, force: true });
   fs.writeFileSync(path.join(REPO, "src", "agent.ts"), "export const ok = true;\n");
   rules([rule("ok", "*", "fs.write", "project:*", "allow")]);
+  genesis = issue("genesis"); // also sets the Founder passphrase for this test
 });
 
 // ---------- event log ----------
@@ -68,7 +70,7 @@ test("deleting the newest log line is caught by the head", () => {
 
 test("a hostile request quarantines that agent at once and Key Authority then denies it", () => {
   assert.equal(KA.decide(req()).outcome, "allow");
-  KA.reportHostile({ actor: "genesis", action: "fs.write", target: "project:x", reason: "path traversal" });
+  KA.reportHostile(req({ target: "project:x" }), "path traversal");
   assert.equal(state.getAgent("genesis").status, "quarantined");
   assert.match(KA.decide(req()).reason, /quarantined by the Warden/);
   assert.equal(state.getAgent("savannah").status, "active");
@@ -77,8 +79,8 @@ test("a hostile request quarantines that agent at once and Key Authority then de
 test("quarantine voids the agent's pending requests and unused approvals, not others'", () => {
   rules([rule("q", "*", "fs.write", "**", "ask")]);
   const g = KA.decide(req()).requestId;
-  KA.decide(req({ actor: "builder", digest: digestOf({ other: 1 }) }));
-  kaFounder.approve(g);
+  KA.decide(req({ digest: digestOf({ other: 1 }) }, issue("builder")));
+  kaFounder.approve(g, PASS);
   state.quarantine("genesis", "test");
   assert.equal(kaFounder.listPending().length, 1);
   assert.equal(kaFounder.listPending()[0].actor, "builder");
@@ -95,8 +97,11 @@ test("repeated rule denials quarantine an agent", () => {
 });
 
 test("an invalid agent name is treated as quarantined", () => {
-  assert.equal(KA.decide(req({ actor: "../genesis" })).outcome, "deny");
-  assert.equal(KA.decide(req({ actor: "Genesis" })).outcome, "deny");
+  assert.equal(state.getAgent("../genesis").status, "quarantined");
+  assert.equal(state.getAgent("Genesis").status, "quarantined");
+  // and a request can't name one at all: identity comes only from the signature
+  assert.equal(KA.decide({ ...req(), actor: "../genesis" }).outcome, "deny");
+  assert.equal(state.getAgent("genesis").status, "active");
 });
 
 // ---------- code integrity ----------
@@ -109,7 +114,6 @@ test("unpinned code is reported but does not block", () => {
 });
 
 test("changed code after pinning quarantines every agent and blocks startup", () => {
-  F.setPassphrase(PASS);
   F.pin(PASS);
   assert.equal(W.check().integrity.ok, true);
 
@@ -123,7 +127,6 @@ test("changed code after pinning quarantines every agent and blocks startup", ()
 });
 
 test("a new file planted in the code is caught too", () => {
-  F.setPassphrase(PASS);
   F.pin(PASS);
   fs.writeFileSync(path.join(REPO, "src", "backdoor.ts"), "export {};\n");
   assert.match(W.check().integrity.detail, /added: src\/backdoor\.ts/);
@@ -131,7 +134,6 @@ test("a new file planted in the code is caught too", () => {
 });
 
 test("editing the rules file after pinning counts as a code change", () => {
-  F.setPassphrase(PASS);
   F.pin(PASS);
   rules([rule("all", "*", "*", "**", "allow")]);
   assert.match(W.check().integrity.detail, /config\/key-authority\.json/);
@@ -140,7 +142,6 @@ test("editing the rules file after pinning counts as a code change", () => {
 // ---------- founder recovery ----------
 
 test("recovery: restore code, release to probation, then trust", () => {
-  F.setPassphrase(PASS);
   F.pin(PASS);
   fs.writeFileSync(path.join(REPO, "src", "agent.ts"), "tampered\n");
   W.check();
@@ -148,7 +149,7 @@ test("recovery: restore code, release to probation, then trust", () => {
   assert.throws(() => F.release("genesis", PASS), /Code still differs/);
   fs.writeFileSync(path.join(REPO, "src", "agent.ts"), "export const ok = true;\n");
 
-  assert.throws(() => F.release("genesis", "wrong passphrase!!"), /Wrong passphrase/);
+  assert.throws(() => F.release("genesis", "wrong passphrase!!"), /Wrong or missing founder passphrase/);
   F.release("genesis", PASS);
   assert.equal(state.getAgent("genesis").status, "probation");
   assert.throws(() => F.clearLockdown(PASS), /still quarantined: savannah/);
@@ -165,22 +166,20 @@ test("recovery: restore code, release to probation, then trust", () => {
 });
 
 test("an agent cannot be trusted straight out of quarantine", () => {
-  F.setPassphrase(PASS);
   state.quarantine("genesis", "test");
   assert.throws(() => F.trust("genesis", PASS), /only an agent on probation/);
 });
 
 test("passphrase rules: minimum length, and changing it needs the old one", () => {
-  assert.throws(() => F.setPassphrase("short"), /at least 10/);
-  F.setPassphrase(PASS);
-  assert.throws(() => F.setPassphrase("another long passphrase", "wrong one here"), /current passphrase is wrong/);
+  assert.throws(() => F.setPassphrase("short", PASS), /at least 10/);
+  assert.throws(() => F.setPassphrase("another long passphrase"), /Wrong or missing founder passphrase/);
+  assert.throws(() => F.setPassphrase("another long passphrase", "wrong one here"), /Wrong or missing founder passphrase/);
   F.setPassphrase("another long passphrase", PASS);
   assert.equal(F.verifyPassphrase(PASS), false);
   assert.equal(F.verifyPassphrase("another long passphrase"), true);
 });
 
 test("a tampered log quarantines everyone until the founder archives it", () => {
-  F.setPassphrase(PASS);
   state.logEvent({ type: "x" });
   fs.writeFileSync(state.HEAD_FILE, "f".repeat(64) + "\n");
   assert.equal(W.check().log.ok, false);
@@ -200,8 +199,11 @@ test("only the Warden CLI imports the Warden founder module", () => {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, ent.name);
       if (ent.isDirectory()) walk(p);
-      else if (/\.(ts|js)$/.test(ent.name) && !p.endsWith(path.join("warden", "cli.ts")) && !p.includes(path.join("authority", ""))) {
-        if (/["'][^"']*warden\/founder["']|["']\.\/founder["']/.test(fs.readFileSync(p, "utf-8"))) offenders.push(p);
+      else if (/\.(ts|js)$/.test(ent.name) && p !== path.join(src, "genesis", "warden", "cli.ts")) {
+        const text = fs.readFileSync(p, "utf-8");
+        const inWarden = path.dirname(p) === path.join(src, "genesis", "warden");
+        // every file is checked, Key Authority's included (they were skipped before)
+        if (/["'][^"']*warden\/founder["']/.test(text) || (inWarden && /["']\.\/founder["']/.test(text))) offenders.push(p);
       }
     }
   };
