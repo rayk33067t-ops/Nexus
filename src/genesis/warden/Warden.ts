@@ -1,6 +1,6 @@
 import path from "path";
 
-import { readJSON } from "../authority/store";
+import { PATHS, readJSON } from "../authority/store";
 import { Manifest, compareManifests, describeDiff, isClean, manifest } from "./integrity";
 import { verifyLog } from "./log";
 import { AgentRecord, BASELINE_FILE, HEAD_FILE, LOG_FILE, allAgents, getAgent, logEvent, quarantine } from "./state";
@@ -10,11 +10,11 @@ import { AgentRecord, BASELINE_FILE, HEAD_FILE, LOG_FILE, allAgents, getAgent, l
  * contains them automatically. It has no AI and takes no instructions from
  * agents; it acts on code integrity, the event log and recorded signals.
  *
- * NEXUS_ROOT (default: the working directory) is the repo it checks,
- * resolved once at load.
+ * The repo it checks is the NEXUS code's own folder (authority/store PATHS.root),
+ * not the folder NEXUS was started from.
  */
 
-export const ROOT = path.resolve(process.env.NEXUS_ROOT || process.cwd());
+export const ROOT = PATHS.root;
 
 export interface Baseline extends Manifest {
   pinnedAt: string;

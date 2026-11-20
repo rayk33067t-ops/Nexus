@@ -2,7 +2,8 @@ import fs from "fs";
 import path from "path";
 
 import { DIRS, LOCKDOWN_FILE, LockdownRecord, PATHS, listJSON, readJSON, writeJSONAtomic } from "../authority/store";
-import { appendLog } from "./log";
+import { appendLog, readLog, verifyLog } from "./log";
+import { consumeProof } from "./passphrase";
 
 /**
  * Warden state: each agent's status, the signals that count against it, and
@@ -14,8 +15,9 @@ import { appendLog } from "./log";
  *   probation    released by the founder; every action needs approval
  *
  * Containment never needs the agent's cooperation, and recovery never
- * happens automatically: only the founder CLI moves an agent out of
- * quarantine.
+ * happens automatically. Making an agent stricter (quarantine) needs
+ * nothing; making it less strict (probation or active) needs a Founder proof,
+ * which only exists after the passphrase was checked (warden/passphrase).
  */
 
 export const WARDEN_DIR = path.join(PATHS.stateDir, "warden");
@@ -65,9 +67,23 @@ export function getAgent(agent: string): AgentRecord {
   return { agent, status: "active", since: "", reasons: [] };
 }
 
-export function setAgent(rec: AgentRecord): void {
+function setAgent(rec: AgentRecord): void {
   if (!AGENT_RE.test(rec.agent)) throw new Error(`Not a valid agent name: ${rec.agent}`);
   writeJSONAtomic(agentFile(rec.agent), rec);
+}
+
+/**
+ * Move an agent out of quarantine or probation. Needs a single-use proof
+ * from requireFounder for "agent.release" or "agent.trust"; anything else,
+ * including an object that only looks like a proof, is refused and recorded.
+ */
+export function restoreAgent(rec: AgentRecord, proof: unknown): void {
+  if (rec.status === "quarantined") throw new Error("Use quarantine() to make an agent stricter.");
+  if (!consumeProof(proof, ["agent.release", "agent.trust"])) {
+    logEvent({ type: "founder-auth-failed", operation: "agent.restore", reason: "no valid founder proof" });
+    throw new Error("Restoring an agent needs the Founder passphrase.");
+  }
+  setAgent(rec);
 }
 
 export function allAgents(): AgentRecord[] {
@@ -76,14 +92,49 @@ export function allAgents(): AgentRecord[] {
   return [...names].filter((n) => AGENT_RE.test(n)).sort().map(getAgent);
 }
 
-/** Put NEXUS into Key Authority lockdown (same file Key Authority reads). */
-function lockdown(agent: string, reason: string): void {
+/**
+ * Put NEXUS into lockdown. Two records are kept: the lockdown file (details
+ * of each incident) and a "lockdown" event in the Warden's hash-chained log.
+ * The log is what decides (see lockdownActive), so deleting the file doesn't
+ * end lockdown.
+ */
+export function enterLockdown(incident: { actor: string; action: string; target: string; reason: string }): void {
   const prev = (readJSON(LOCKDOWN_FILE) as LockdownRecord | null) ?? null;
   const now = new Date().toISOString();
-  writeJSONAtomic(LOCKDOWN_FILE, {
-    since: prev?.since ?? now,
-    incidents: [...(prev?.incidents ?? []), { at: now, actor: agent, action: "warden", target: "quarantine", reason }].slice(-100),
-  });
+  const i = {
+    at: now,
+    actor: String(incident.actor ?? "").slice(0, 256),
+    action: String(incident.action ?? "").slice(0, 256),
+    target: String(incident.target ?? "").slice(0, 1024),
+    reason: String(incident.reason ?? "").slice(0, 2000),
+  };
+  writeJSONAtomic(LOCKDOWN_FILE, { since: prev?.since ?? now, incidents: [...(prev?.incidents ?? []), i].slice(-100) });
+  logEvent({ type: "lockdown", actor: i.actor, action: i.action, target: i.target, reason: i.reason.slice(0, 500) });
+}
+
+/**
+ * Is NEXUS in lockdown? Yes if the lockdown file exists, or if the Warden's
+ * log shows a lockdown with no Founder-approved clear after it, or if the log
+ * can't be trusted (fails closed). Only warden/founder clearLockdown, with the
+ * passphrase, writes the "lockdown-cleared" event that ends it.
+ */
+export function lockdownActive(): { locked: boolean; why: string } {
+  if (fs.existsSync(LOCKDOWN_FILE)) return { locked: true, why: "lockdown file present" };
+  const v = verifyLog(LOG_FILE, HEAD_FILE);
+  if (!v.ok) return { locked: true, why: `the Warden's event log can't be trusted (${v.reason})` };
+  let locked = false;
+  for (const e of readLog(LOG_FILE)) {
+    const t = (e?.event as { type?: string } | undefined)?.type;
+    if (t === "lockdown") locked = true;
+    else if (t === "lockdown-cleared") locked = false;
+  }
+  return locked
+    ? { locked: true, why: "the Warden's log shows a lockdown that the Founder hasn't cleared (the lockdown file is missing)" }
+    : { locked: false, why: "" };
+}
+
+function lockdown(agent: string, reason: string): void {
+  enterLockdown({ actor: agent, action: "warden", target: "quarantine", reason });
 }
 
 /** Move an agent's pending requests and unused approvals out of reach. */
